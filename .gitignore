@@ -29,6 +29,7 @@ target/
 dbt_packages/
 logs/
 profiles.yml
+.user.yml
 !profiles.example.yml
 !profiles.template.yml
 
