@@ -1,0 +1,17 @@
+version: 2
+
+sources:
+  - name: northstar_raw
+    schema: raw
+    description: Preloaded synthetic exports. All source columns are strings.
+    tables:
+      - name: accounts
+        description: CRM account export containing structured and free-text PII.
+      - name: contracts_batch1
+        description: Initial subscription contract extract.
+      - name: workspaces
+        description: Application workspaces and their CRM account references.
+      - name: usage_batch1
+        description: Initial monthly workspace usage extract.
+      - name: cloud_costs
+        description: Workspace-level and unallocated cloud costs.

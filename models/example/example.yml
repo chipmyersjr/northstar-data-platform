@@ -1,0 +1,10 @@
+version: 2
+
+models:
+  - name: stg_accounts_example
+    description: Disposable connectivity example; not a required challenge model.
+    columns:
+      - name: account_id
+        tests:
+          - not_null
+          - unique
