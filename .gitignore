@@ -1,0 +1,73 @@
+# macOS metadata
+.DS_Store
+._*
+.Spotlight-V100/
+.Trashes/
+
+# Python environments, bytecode, and tool caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+build/
+dist/
+.ipynb_checkpoints/
+
+# dbt generated artifacts and local connection profiles
+target/
+dbt_packages/
+logs/
+profiles.yml
+!profiles.example.yml
+!profiles.template.yml
+
+# Local environment variables and credentials; keep templates
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+.aws/
+.secrets/
+secrets/
+credentials.json
+credentials.local.*
+*.pem
+*.key
+
+# VS Code machine-specific settings; allow shared project configuration
+.vscode/*
+!.vscode/extensions.json
+!.vscode/tasks.json
+!.vscode/launch.json
+*.code-workspace
+
+# Temporary files, editor backups, and logs
+tmp/
+temp/
+*.tmp
+*.temp
+*.log
+*.swp
+*.swo
+*~
+
+# Local DuckDB databases and write-ahead logs
+# Add a specific exception here if a sample database is intentionally tracked.
+*.duckdb
+*.duckdb.wal
+*.ddb
+*.ddb.wal
+*.db
+*.db.wal
