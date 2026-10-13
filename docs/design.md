@@ -797,6 +797,7 @@ CREATE TABLE published.customer_monthly_metrics (
 - Check workspace-level canonical records for coverage. Do not assume intermediate zero usage or nonnull aggregated cloud costs prove workspace-level coverage. Refer to Section 1 for metric limitations. Account for quarantined workspaces when assessing affected customer-months; do not treat their omission as confirmed coverage or infer trusted ownership or lifecycle values.
 - Require reliable subscription metrics and resolved attribution. Exclude canonical-quarantined records from metrics; use their available customer/workspace and period references to identify affected customer-months and prevent incomplete totals from being published.
 - Exclude only affected customer-months when coverage or attribution is incomplete. Unaffected customer-months remain publishable.
+- Omitted customer-months are unreportable, not zero. Withholding the entire row may withhold otherwise valid metrics; this is intentional because dependent metrics such as gross margin require reliable revenue and cost inputs. Exclusion reasons remain in `published.monthly_data_quality_exceptions`.
 - Preserve confirmed zero values. Never replace missing or unknown metrics with zero.
 - Calculate `gross_margin` as `(monthly_subscription_revenue_usd - cloud_cost_usd) / monthly_subscription_revenue_usd * 100`, rounded to four decimal places. Return null when revenue is zero or required inputs are unknown.
 - Do not include unresolved customer or workspace buckets in this table.
