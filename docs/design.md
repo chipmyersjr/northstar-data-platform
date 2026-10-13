@@ -2,7 +2,7 @@
 
 ## 1. Final Customer Reporting View
 
-`published.customer_monthly_metrics` is a **dbt table** with one row per customer per eligible reporting month, including historical months. A customer-month is published only when customer attribution is resolved, subscription metrics are reliable, and usage and cost data are complete for all active workspaces. Incomplete customer-months are excluded without affecting other customers.
+`published.customer_monthly_metrics` is a **dbt table** with one row per customer per eligible reporting month, including historical months. A customer-month is published only when customer attribution is resolved, subscription metrics are reliable, and all active workspaces have workspace-month record coverage for usage and costs. Incomplete customer-months are excluded without affecting other customers.
 
 Annualized subscription value is based on contracts effective at month-end, while usage, cloud costs, and estimated revenue reflect activity during the month. The `reporting_month` column identifies that period, and all monetary values are in USD.
 
@@ -29,10 +29,10 @@ CREATE TABLE published.customer_monthly_metrics (
 | `reporting_month` | First day of the reporting month. Together with `customer_id`, uniquely identifies each row. |
 | `annualized_subscription_value_usd` | Annualized value of contracts active at month-end. Monthly amounts are multiplied by 12; annual amounts are used as-is. Contracts that ended before month-end or start afterward are excluded. |
 | `monthly_subscription_revenue_usd` | Estimated subscription revenue for the month, prorated based on the number of active service days. |
-| `product_usage_active_users` | Sum of active users across the customer's workspaces for the month. Users active in multiple workspaces may be counted more than once. |
-| `product_usage_api_calls` | Total API calls across the customer's workspaces for the month. |
-| `cloud_cost_usd` | Total compute and storage costs attributed to the customer's workspaces for the month. Unallocated costs are tracked in `published.monthly_data_quality_exceptions`. |
-| `gross_margin` | Percentage of estimated subscription revenue remaining after cloud costs: (`monthly_subscription_revenue_usd` − `cloud_cost_usd`) / `monthly_subscription_revenue_usd` × 100. Null when revenue is zero or required inputs are unknown. Other costs of revenue are not included. |
+| `product_usage_active_users` | Sum of observed active-user counts across the customer's workspaces for the month. Users active in multiple workspaces may be counted more than once. |
+| `product_usage_api_calls` | Total observed API calls across the customer's workspaces for the month. |
+| `cloud_cost_usd` | Observed compute and storage costs from all valid, selected, distinct charges attributed to the customer's workspaces for the month. Unallocated costs are tracked in `published.monthly_data_quality_exceptions`. |
+| `gross_margin` | Percentage of estimated subscription revenue remaining after observed cloud costs: (`monthly_subscription_revenue_usd` − `cloud_cost_usd`) / `monthly_subscription_revenue_usd` × 100. Null when revenue is zero or required inputs are unknown. Other costs of revenue are not included. |
 
 **Metric rules**
 
@@ -41,10 +41,10 @@ CREATE TABLE published.customer_monthly_metrics (
 - Prorate partial-month starts and ends using inclusive service dates. Count days from the later of the contract start or month-start through the earlier of the contract end or month-end. Treat a missing contract end date as month-end. Sum the contract amounts by customer, then round to cents.
 - Group metrics by customer and reporting month. All four business questions can be answered directly from `published.customer_monthly_metrics`, without joining to the exceptions table.
 - Start reporting each customer from their earliest reliable contract start or associated workspace creation date. Continue reporting after subscriptions end or are cancelled. Do not use account `updated_at` as a creation date.
-- **Customer-month eligibility:** Publish a month within the source-derived reporting cutoff only when subscription metrics are reliable, customer attribution is resolved, and every known workspace active during that month has valid usage and cloud-cost coverage. A workspace is active if it was created by month-end and was not deleted before month-start.
+- **Customer-month eligibility:** Publish a month within the source-derived reporting cutoff only when subscription metrics are reliable, customer attribution is resolved, and every known workspace active during that month has at least one valid, selected record for both usage and cloud costs. A workspace is active if it was created by month-end and was not deleted before month-start.
 - If a customer-month fails validation, exclude it and record the reason in `published.monthly_data_quality_exceptions`. Missing usage or cost data is not treated as zero, although confirmed zero activity or no eligible contracts may produce zero values. Gross margin is null when revenue is zero or cannot be calculated reliably.
 - Keep unresolved mappings and unallocated costs visible without assigning them to customers arbitrarily or blocking unrelated customer-months.
-- **Metric limitations:** Annualized subscription value is a month-end contract snapshot, while monthly subscription revenue is a prorated estimate, not recognized accounting revenue. Gross margin includes only the available cloud costs and is not a GAAP gross margin measure.
+- **Metric limitations:** Annualized subscription value is a month-end contract snapshot, while monthly subscription revenue is a prorated estimate, not recognized accounting revenue. Usage and cloud costs are observed values; workspace-month records establish coverage, but the source provides no independent evidence that all activity or charges were captured. Gross margin inherits the observed-cost limitation and is not a GAAP gross margin measure.
 - **Aggregation limitations:** Customer-month values should not be treated as complete company-wide totals. Unallocated costs, unresolved mappings, and excluded customer-months may leave activity unrepresented.
 - Do not sum annualized subscription value across months or sum or directly average gross-margin percentages. Active-user counts may overlap across workspaces or customers and do not represent distinct company-wide users. Company-level reporting would need its own aggregation and reconciliation rules.
 
@@ -95,7 +95,7 @@ CREATE TABLE published.monthly_data_quality_exceptions (
 
 ### 2.4 Data-Quality Verification and Reconciliation
 
-- Run uniqueness, non-null, relationship, accepted-value, and business-rule tests. Verify metric calculations, the defined reporting cutoff, customer-month completeness, and absence of restricted PII.
+- Run uniqueness, non-null, relationship, accepted-value, and business-rule tests. Verify metric calculations, the defined reporting cutoff, customer-month usage/cost record coverage, and absence of restricted PII.
 - Reconcile raw records and financial/usage totals through staging or quarantine, canonical selection, duplicate/superseded audit, or canonical quarantine, intermediate metrics, and published outputs. Explain differences from unresolved attribution and excluded customer-months without double-counting. Reconcile derived metrics through their eligibility, annualization, and proration rules; ASV need not equal raw amounts.
 - Test representative scenarios: duplicate records, null selection timestamps in repeated groups, identical/conflicting latest-timestamp ties, identical/conflicting workspace records, missing workspace mappings, missing monthly usage or costs, incorrect financial totals, and restricted PII exposure. Verify the expected disposition or build failure for each.
 
@@ -103,7 +103,7 @@ CREATE TABLE published.monthly_data_quality_exceptions (
 
 - Fail `dbt build` on integrity (including required-field, uniqueness, and relationship checks), calculation, lineage, reconciliation, or PII-protection violations. Treat published tables as current only after a successful build; failed builds may leave stale or partially rebuilt tables available.
 - Expected source-data exceptions—staging/canonical quarantined records and unresolved attribution—remain visible without automatically failing the build.
-- Exclude only customer-months with incomplete workspace usage, cloud-cost coverage, or unreliable subscription metrics. Verify every exclusion has a specific reason in `published.monthly_data_quality_exceptions` and unaffected valid customer-months remain publishable.
+- Exclude only customer-months with missing workspace-month usage or cloud-cost records, or unreliable subscription metrics. Verify every exclusion has a specific reason in `published.monthly_data_quality_exceptions` and unaffected valid customer-months remain publishable.
 
 ## 3. Transformation Pipeline
 
@@ -694,7 +694,7 @@ CREATE TABLE intermediate.int_customer_subscription_metrics (
 
 **Transformation rules**
 
-- Set the reporting cutoff to the latest valid `usage_month` present in both `staging.stg_usage` and `staging.stg_cloud_costs`. Match months only, not workspace IDs. Use source data, not the build date; if no common month exists, fail validation with a clear error. Check workspace completeness separately for customer-month publication.
+- Set the reporting cutoff to the latest valid `usage_month` present in both `staging.stg_usage` and `staging.stg_cloud_costs`. Match months only, not workspace IDs. Use source data, not the build date; if no common month exists, fail validation with a clear error. Check workspace-month usage/cost record coverage separately for customer-month publication.
 - Generate reporting months from the earliest known contract start or mapped workspace creation through the source-derived cutoff. Include each customer beginning with their earliest reliable contract start or mapped workspace creation.
 - Calculate annualized subscription value (ASV) at month-end. Sum annual contract amounts unchanged and monthly contract amounts multiplied by 12. Include contracts effective on the final day of the month, using inclusive start/end dates.
 - Calculate monthly subscription revenue independently. For each contract, divide its annualized amount by 12, multiply by active service days within the reporting month, and divide by calendar days in that month. Sum contract contributions by customer/month before rounding to two decimal places.
@@ -726,10 +726,10 @@ CREATE TABLE intermediate.int_customer_monthly_usage (
 **Transformation rules**
 
 - Reuse the customer/month spine from `intermediate.int_customer_subscription_metrics`. Produce one `resolved` row for each customer/month in that spine.
-- Aggregate selected canonical usage by resolved `customer_id` and `usage_month` before joining to the spine. Sum `active_users` and `api_calls`; use zero when no usage records exist for a customer/month. Zero does not guarantee complete source reporting.
-- Active users are summed workspace counts, not distinct people across workspaces.
+- Aggregate selected canonical usage by resolved `customer_id` and `usage_month` before joining to the spine. Sum `active_users` and `api_calls`; use zero when no usage records exist for a customer/month. This intermediate zero does not confirm activity or record coverage and must not replace missing data in published metrics.
+- Usage totals reflect observed records. Active users are summed workspace counts, not distinct people across workspaces.
 - Group unattributed usage by (`resolution_status`, `usage_month`), with null `customer_id`. Preserve `missing_workspace`, `unknown_workspace`, and `unresolved_customer` totals, including months outside the customer/month spine.
-- Do not include superseded or canonical-quarantined usage records in metric totals; their absence does not confirm complete coverage.
+- Do not include superseded or canonical-quarantined usage records in metric totals; their absence does not confirm record coverage.
 
 **dbt tests and validations**
 
@@ -756,7 +756,7 @@ CREATE TABLE intermediate.int_customer_monthly_cloud_costs (
 
 - Reuse the customer/month spine from `intermediate.int_customer_subscription_metrics`. Produce one `resolved` row for each customer/month in that spine.
 - Aggregate selected canonical charges by resolved `customer_id` and `usage_month` before joining to the spine. Sum `compute_cost_usd + storage_cost_usd`.
-- Use `NULL` when a customer/month has no matching cost records, since cost coverage cannot be confirmed. Use zero only when complete coverage is independently established. Matching charges provide a cost total but do not independently prove completeness.
+- Use `NULL` when a customer/month has no matching cost records; do not infer zero from missing records. Sum all valid, selected, distinct charges as observed costs. Zero requires confirmed zero costs.
 - Group unallocated charges by (`resolution_status`, `usage_month`), with null `customer_id`. Preserve `missing_workspace`, `unknown_workspace`, and `unresolved_customer` totals, including cost-only months outside the customer/month spine.
 - Do not allocate unresolved charges to customers or include superseded or canonical-quarantined records in financial totals.
 
@@ -765,7 +765,7 @@ CREATE TABLE intermediate.int_customer_monthly_cloud_costs (
 - `not_null`: `resolution_status`, `reporting_month`; `unique`: (`customer_id`, `reporting_month`) for resolved rows and (`resolution_status`, `reporting_month`) for unresolved rows.
 - `relationships`: nonnull `customer_id` references `canonical.dim_customer`. Accepted statuses: `resolved`, `missing_workspace`, `unknown_workspace`, `unresolved_customer`. Only resolved rows have nonnull customer IDs; unresolved rows require a nonnull cost amount.
 - Check nonnegative nonnull costs and first-of-month reporting dates. Verify exactly one resolved row for every customer/month in the subscription metrics spine.
-- Reconcile resolved and unresolved cost totals against selected canonical charges by month, without multiplying amounts through joins. Validate that missing costs remain `NULL` unless complete coverage is established.
+- Reconcile resolved and unresolved cost totals against selected canonical charges by month, without multiplying amounts through joins. Validate that missing costs remain `NULL`, not automatically zero.
 - Fail `dbt build` on integrity, uniqueness, coverage, or reconciliation violations. Unresolved attribution or expected canonical quarantine alone does not fail the build.
 
 ### 3.5 Published Customer Reporting View
@@ -793,8 +793,8 @@ CREATE TABLE published.customer_monthly_metrics (
 - Start from the customer/month spine in `intermediate.int_customer_subscription_metrics`.
 - Join `canonical.dim_customer` for customer names and the three intermediate metric tables by customer ID and reporting month. Use only resolved customer rows.
 - Include all eligible historical months in the customer/month spine, not just the latest month.
-- Validate that every known workspace mapped to the customer and active during the reporting month has valid usage and cloud-cost coverage. A workspace is active when created on/before month-end and not deleted before month-start.
-- Check workspace-level canonical records for coverage. Do not assume intermediate zero usage or nonnull aggregated cloud costs prove completeness. Account for quarantined workspaces when assessing affected customer-months; do not treat their omission as confirmed completeness or infer trusted ownership or lifecycle values.
+- Validate that every known workspace mapped to the customer and active during the reporting month has at least one valid, selected record for both usage and cloud costs. A workspace is active when created on/before month-end and not deleted before month-start.
+- Check workspace-level canonical records for coverage. Do not assume intermediate zero usage or nonnull aggregated cloud costs prove workspace-level coverage. Refer to Section 1 for metric limitations. Account for quarantined workspaces when assessing affected customer-months; do not treat their omission as confirmed coverage or infer trusted ownership or lifecycle values.
 - Require reliable subscription metrics and resolved attribution. Exclude canonical-quarantined records from metrics; use their available customer/workspace and period references to identify affected customer-months and prevent incomplete totals from being published.
 - Exclude only affected customer-months when coverage or attribution is incomplete. Unaffected customer-months remain publishable.
 - Preserve confirmed zero values. Never replace missing or unknown metrics with zero.
@@ -807,7 +807,7 @@ CREATE TABLE published.customer_monthly_metrics (
 - `not_null`: `customer_id`, `reporting_month`.
 - `unique`: (`customer_id`, `reporting_month`).
 - `relationships`: `customer_id` references `canonical.dim_customer`.
-- Validate reporting months against the customer/month spine, customer names, metric calculations, workspace-level coverage, and gross-margin calculations.
+- Validate reporting months against the customer/month spine, customer names, metric calculations, workspace-month usage/cost coverage, and gross-margin calculations.
 - Verify published customer-months agree with the resolved intermediate aggregates.
 - Verify incomplete customer-months, including those potentially affected by quarantined workspace conflicts, are excluded and have corresponding data-quality exceptions.
 - Confirm joins do not duplicate customer-months or multiply amounts.
