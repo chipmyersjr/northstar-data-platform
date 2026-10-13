@@ -27,8 +27,8 @@ CREATE TABLE published.customer_monthly_metrics (
 | `customer_id` | Customer ID from the normalized `accounts.account_id`. |
 | `customer_name` | Customer name from `accounts.account_name`. |
 | `reporting_month` | First day of the reporting month. Together with `customer_id`, uniquely identifies each row. |
-| `annualized_subscription_value_usd` | Annualized value of contracts active at month-end. Monthly amounts are multiplied by 12; annual amounts are used as-is. Contracts that ended before month-end or start afterward are excluded. |
-| `monthly_subscription_revenue_usd` | Estimated subscription revenue for the month, prorated based on the number of active service days. |
+| `annualized_subscription_value_usd` | Sum of annualized values of all distinct contracts active at month-end, including overlapping contracts. Monthly amounts are multiplied by 12; annual amounts are used as-is. Contracts that ended before month-end or start afterward are excluded. |
+| `monthly_subscription_revenue_usd` | Sum of each distinct contract's estimated revenue for its active service days during the month, including overlapping contracts. |
 | `product_usage_active_users` | Sum of observed active-user counts across the customer's workspaces for the month. Users active in multiple workspaces may be counted more than once. |
 | `product_usage_api_calls` | Total observed API calls across the customer's workspaces for the month. |
 | `cloud_cost_usd` | Observed compute and storage costs from all valid, selected, distinct charges attributed to the customer's workspaces for the month. Unallocated costs are tracked in `published.monthly_data_quality_exceptions`. |
@@ -696,8 +696,8 @@ CREATE TABLE intermediate.int_customer_subscription_metrics (
 
 - Set the reporting cutoff to the latest valid `usage_month` present in both `staging.stg_usage` and `staging.stg_cloud_costs`. Match months only, not workspace IDs. Use source data, not the build date; if no common month exists, fail validation with a clear error. Check workspace-month usage/cost record coverage separately for customer-month publication.
 - Generate reporting months from the earliest known contract start or mapped workspace creation through the source-derived cutoff. Include each customer beginning with their earliest reliable contract start or mapped workspace creation.
-- Calculate annualized subscription value (ASV) at month-end. Sum annual contract amounts unchanged and monthly contract amounts multiplied by 12. Include contracts effective on the final day of the month, using inclusive start/end dates.
-- Calculate monthly subscription revenue independently. For each contract, divide its annualized amount by 12, multiply by active service days within the reporting month, and divide by calendar days in that month. Sum contract contributions by customer/month before rounding to two decimal places.
+- Calculate annualized subscription value (ASV) at month-end. Sum all distinct annual contract amounts unchanged and monthly contract amounts multiplied by 12. Include contracts effective on the final day of the month, using inclusive start/end dates.
+- Calculate monthly subscription revenue independently. For each contract, divide its annualized amount by 12, multiply by active service days within the reporting month, and divide by calendar days in that month. Sum distinct contract contributions by customer/month before rounding to two decimal places. Overlapping contracts are additive, not replacements; each contributes according to its own start/end dates.
 - Aggregate resolved contracts by customer/month before joining to the customer/month spine. Use zero when no eligible contracts exist.
 - Include only contracts with `resolution_status = 'resolved'` in customer metrics. Unresolved contracts remain traceable in the canonical fact and its audit. Treat unresolved attribution as a data-quality exception rather than automatically failing this model. Exclude canonical-quarantined contracts from calculations. Do not consider affected totals complete when unresolved or quarantined contracts could change them.
 
