@@ -2,7 +2,7 @@
 
 ## 1. Final Customer Reporting View
 
-`published.customer_monthly_metrics` is a **dbt table** with one row per customer per eligible reporting month, including historical months. A customer-month is published only when customer attribution is resolved, subscription metrics are reliable, and all active workspaces have workspace-month record coverage for usage and costs. Incomplete customer-months are excluded without affecting other customers.
+`published.customer_monthly_metrics` is a **dbt table** with one row per customer per eligible reporting month, including historical months. A customer-month is published only when customer attribution is resolved, subscription metrics are reliable, and every active workspace has valid usage and cloud-cost records for that month. Incomplete customer-months are excluded without affecting other customers.
 
 Annualized subscription value is based on contracts effective at month-end, while usage, cloud costs, and estimated revenue reflect activity during the month. The `reporting_month` column identifies that period, and all monetary values are in USD.
 
@@ -66,8 +66,8 @@ CREATE TABLE published.monthly_data_quality_exceptions (
 ```
 
 - `reporting_month` identifies the affected month; retain null when an invalid source date prevents determining it. Source table, available identifiers, and source-row ID support tracing the exception; missing-record exceptions have no source-row ID.
-- Use `completeness` / `missing_usage` or `missing_cloud_cost` for expected workspace coverage gaps; `mapping` / `unresolved_customer` or `unknown_workspace` for unresolved identities; and `quarantine` / the actual specific staging or canonical rejection reason, not a generic `quarantined_record` label. Costs with no workspace ID use `mapping` / `missing_workspace`.
-- Retain excluded customer-months with their specific reasons, excluded financial amounts and usage counts where applicable, and unresolved usage and unallocated costs. Null means unavailable or not applicable, not zero; completeness exceptions must not invent missing amounts or counts.
+- Use `completeness` with `missing_usage` or `missing_cloud_cost` when an active workspace has no valid usage or cloud-cost records for the month. Use `mapping` with `unresolved_customer`, `unknown_workspace`, or `missing_workspace` for unresolved attribution. Unexpected invalid records fail dbt validation rather than being published as quarantine exceptions.
+- Retain excluded customer-months with their specific reasons, along with unresolved usage and unallocated cloud costs.
 
 
 
@@ -87,58 +87,42 @@ CREATE TABLE published.monthly_data_quality_exceptions (
 
 - Run the complete build twice against unchanged raw inputs and verify identical schemas, row counts, and table contents across all downstream tables, including the same reporting window regardless of execution date.
 - Delete or truncate a downstream table, rerun the complete build, and verify correct restoration. Full rebuilds must not depend on previously materialized downstream contents; raw inputs remain unchanged.
+- Unexpected invalid source records or duplicate normalized business keys cause `dbt build` to fail rather than being quarantined. Recovery requires correcting the input data and rerunning the build.
 
-### 2.3 Source-Row Accounting
+### 2.3 Source Integrity and Traceability
 
-- Verify every raw source row appears exactly once in staging or quarantine, and every accepted staging row has exactly one canonical selection outcome: selected, duplicate/superseded audit, or canonical quarantine.
-- Trace each record by source table and `source_row_id` through its outcomes and any applicable published exception, preserving explicit rejection, duplicate/supersession, and unresolved-attribution reasons. Attribution audit entries must not count as additional source records.
+- Preserve `source_row_id` in staging and applicable canonical models to support tracing records back to the supplied DuckDB raw tables.
+- Validate required fields and normalized business-key uniqueness using dbt tests. Unexpected invalid records or duplicate business keys fail the build rather than being quarantined.
+- Preserve unresolved customer and workspace attribution through explicit resolution statuses and `published.monthly_data_quality_exceptions`.
 
 ### 2.4 Data-Quality Verification and Reconciliation
 
-- Run uniqueness, non-null, relationship, accepted-value, and business-rule tests. Verify metric calculations, the defined reporting cutoff, customer-month usage/cost record coverage, and absence of restricted PII.
-- Reconcile raw records and financial/usage totals through staging or quarantine, canonical selection, duplicate/superseded audit, or canonical quarantine, intermediate metrics, and published outputs. Explain differences from unresolved attribution and excluded customer-months without double-counting. Reconcile derived metrics through their eligibility, annualization, and proration rules; ASV need not equal raw amounts.
-- Test representative scenarios: duplicate records, null selection timestamps in repeated groups, identical/conflicting latest-timestamp ties, identical/conflicting workspace records, missing workspace mappings, missing monthly usage or costs, incorrect financial totals, and restricted PII exposure. Verify the expected disposition or build failure for each.
+- Run dbt tests for uniqueness, non-null fields, relationships, accepted values, and essential business rules. Verify metric calculations, the source-derived reporting cutoff, valid usage and cloud-cost records for each active workspace and month, and absence of restricted PII.
+- Reconcile observed usage and cloud-cost totals between canonical records and resolved/unresolved intermediate aggregates. Verify published values against eligible customer-month metrics without double-counting.
 
 ### 2.5 Publication Safeguards
 
-- Fail `dbt build` on integrity (including required-field, uniqueness, and relationship checks), calculation, lineage, reconciliation, or PII-protection violations. Treat published tables as current only after a successful build; failed builds may leave stale or partially rebuilt tables available.
-- Expected source-data exceptions—staging/canonical quarantined records and unresolved attribution—remain visible without automatically failing the build.
-- Exclude only customer-months with missing workspace-month usage or cloud-cost records, or unreliable subscription metrics. Verify every exclusion has a specific reason in `published.monthly_data_quality_exceptions` and unaffected valid customer-months remain publishable.
+- Fail `dbt build` when required-field, normalized business-key uniqueness, relationship, essential business-rule, metric-calculation, or PII-protection tests fail. Treat published tables as current only after a successful build; failed builds may leave stale or partially rebuilt tables available.
+- Expected unresolved customer/workspace attribution remains visible through explicit resolution statuses and published exceptions without automatically failing the build.
+- Exclude customer-months with incomplete usage or cloud-cost data, unresolved customer attribution, or unreliable subscription metrics. Record the specific reasons in `published.monthly_data_quality_exceptions` without affecting valid customer-months.
 
 ## 3. Transformation Pipeline
 
-```text
-┌────────────────────────────────────────────┐
-│                RAW SOURCES                 │
-│      Accounts, Contracts, Workspaces,      │
-│             Usage, Cloud Costs             │
-└────────────────────────────────────────────┘
-                      ↓
-┌────────────────────────────────────────────┐
-│                  STAGING                   │
-│        Normalize IDs, parse types,         │
-│              validate records              │
-└────────────────────────────────────────────┘
-                      ├──────────────────────────────────────────────────┐
-                      ↓                                                  ↓
-┌────────────────────────────────────────────┐    ┌──────────────────────────────────────────────┐
-│                 CANONICAL                  │    │                 DATA QUALITY                 │
-│ Customer/workspace dimensions and mapping, │    │  Quarantined records, unresolved mappings,   │
-│      contract, usage, and cost facts       │    │                audit records                 │
-└────────────────────────────────────────────┘    └──────────────────────────────────────────────┘
-                      ↓                                                  ↓
-┌────────────────────────────────────────────┐    ┌──────────────────────────────────────────────┐
-│                INTERMEDIATE                │    │                  EXCEPTIONS                  │
-│        Monthly subscription, usage,        │    │     Missing coverage, unallocated costs,     │
-│           and cloud-cost metrics           │    │               rejected records               │
-└────────────────────────────────────────────┘    └──────────────────────────────────────────────┘
-                      ↓                                                  ↓
-┌────────────────────────────────────────────┐    ┌──────────────────────────────────────────────┐
-│        PUBLISHED CUSTOMER REPORTING        │    │      PUBLISHED DATA-QUALITY EXCEPTIONS       │
-│           Valid customer-months            │    │  published.monthly_data_quality_exceptions   │
-│     published.customer_monthly_metrics     │    │                                              │
-└────────────────────────────────────────────┘    └──────────────────────────────────────────────┘
+Raw Sources → Staging → Canonical Models → Intermediate Customer Metrics → Published Customer Monthly Metrics.
+
+```mermaid
+flowchart TD
+    A[Raw Sources] --> B[Staging]
+    B --> C[Canonical Models]
+    C --> D[Intermediate Customer Metrics]
+    D --> E[Published Customer Monthly Metrics]
+    C -->|Mapping: unresolved customer, unknown workspace| F[Published Data Quality Exceptions]
+    D -->|Completeness: missing usage or cloud cost| F
 ```
+
+- Unexpected invalid records and duplicate normalized business keys fail dbt validation.
+- Known unresolved mappings and missing usage or cloud-cost records for active workspace-months are represented in `published.monthly_data_quality_exceptions`.
+- Restricted PII must not appear in analyst-accessible downstream tables.
 
 ### 3.1 Raw Sources
 
@@ -244,15 +228,18 @@ Notes:
 
 **Shared validation rules**
 
-- Quarantine records include `source_table`, `source_row_id`, and `rejection_reasons`, along with only the safe fields needed for investigation and reconciliation. The `source_row_id` must trace back to the original record, even when its business ID is missing or invalid.
-- Missing or invalid optional `updated_at` and `extracted_at` values are set to null rather than quarantined.
-- **PII protection and residual risks:** Contact emails, account notes, and workspace names are treated as sensitive and excluded from downstream models, including quarantine and audit tables. Raw data access must be restricted. Personal information may still appear in customer names or identifiers, or be exposed through logs, debugging, or direct raw database access.
+- All five staging models are dbt **tables**, rebuilt each run. Preserve every raw source record in its corresponding staging model without silently filtering records.
+- Derive `source_row_id` from DuckDB’s internal `rowid` for traceability within the supplied database. It is not guaranteed to remain stable if a raw table is recreated.
+- Normalize identifiers by trimming whitespace and standardizing case as specified in each transformation table.
+- Use dbt tests to validate required fields, normalized business-key uniqueness, data types, and applicable business rules.
+- Unexpected invalid records and duplicate normalized business keys fail `dbt build`; they are not quarantined.
+- Missing or unknown customer/workspace references remain explicit unresolved mapping outcomes where permitted, rather than staging validation failures.
+- **PII protection and residual risks:** Contact emails, account notes, and workspace names are treated as sensitive and excluded from analyst-accessible downstream models. Raw data access must be restricted. Personal information may still appear in customer names or identifiers, or be exposed through logs, debugging, or direct raw database access.
+- Failed upstream tests prevent selected dependent models from running. Previously materialized published tables may remain available but are not guaranteed to be current.
 
 #### `staging.stg_accounts`
 
-dbt **table**, rebuilt each run. `staging.quarantine_accounts` is also rebuilt each run and follows the quarantine rules below. One row per accepted source record. `source_row_id` is an audit key generated from the raw row reference.
-
-DuckDB `rowid` provides source-row identity for the supplied, unchanged raw table; it is not guaranteed to remain stable if the raw table is recreated.
+One row per source record from `raw.accounts`.
 
 ```sql
 CREATE TABLE staging.stg_accounts (
@@ -276,21 +263,13 @@ CREATE TABLE staging.stg_accounts (
 | `account_notes` | — | Excluded: PII. |
 | `updated_at` | `updated_at` | Parse as a timezone-aware timestamp; invalid or empty values become null. |
 
-**Row validation**
+**dbt tests and validations**
 
-- Missing account ID or name: send the record to `staging.quarantine_accounts`, retaining `source_row_id` and a reason. Exclude emails and notes from both outputs.
-
-**dbt tests and publication**
-
-- `not_null`: `source_row_id`, `account_id`, `account_name`; `unique`: `source_row_id`.
-- Row accounting: raw count = staging count + quarantine count. Each raw `source_row_id` must appear in exactly one output. Unexplained loss or duplication fails validation.
-- Fail `dbt build` when accepted records violate required-field or source-row uniqueness checks, or when row accounting fails. Dependent models selected in the same build are skipped when their upstream tests fail. Previously built published tables may remain available, but are not guaranteed to be current.
+- `not_null`: `source_row_id`, `account_id`, `account_name`; `unique`: `account_id`, `source_row_id`.
 
 #### `staging.stg_contracts`
 
-dbt **table**, rebuilt each run. `staging.quarantine_contracts` is also rebuilt each run and follows the quarantine rules below. One row per accepted record from `raw.contracts_batch1`. `source_row_id` is the logical audit key within this source.
-
-DuckDB `rowid` provides source-row identity for the supplied, unchanged raw table; it is not guaranteed to remain stable if the raw table is recreated.
+One row per source record from `raw.contracts_batch1`.
 
 ```sql
 CREATE TABLE staging.stg_contracts (
@@ -324,23 +303,19 @@ CREATE TABLE staging.stg_contracts (
 
 **Row validation**
 
-- Send missing contract IDs, invalid/negative amounts, invalid service dates, end dates before start dates, and cancelled contracts without end dates to `staging.quarantine_contracts`, with the source-row reference and reason. A blank end date is valid for active contracts; an unparseable end date is not.
-- Accept `annual`/`monthly` billing periods and `active`/`cancelled` statuses; quarantine other values because their metric treatment is undefined.
-- Keep missing or unmatched account references for explicit unresolved mapping downstream; do not discard the contract.
+- Missing contract IDs, invalid/negative amounts, invalid service dates, end dates before start dates, and cancelled contracts without end dates fail dbt validation. A blank end date is valid for active contracts; an unparseable end date is not.
+- Accept `annual`/`monthly` billing periods and `active`/`cancelled` statuses; other values fail dbt validation because their metric treatment is undefined.
+- Missing or unmatched account references remain unresolved.
 
 **dbt tests and validations**
 
-- `not_null`: `source_row_id`, `contract_id`, `billing_period`, `recurring_amount_usd`, `starts_on`, `status`; `unique`: `source_row_id`.
+- `not_null`: `source_row_id`, `contract_id`, `billing_period`, `recurring_amount_usd`, `starts_on`, `status`; `unique`: `contract_id`, `source_row_id`.
 - `accepted_values`: billing period = annual/monthly; status = active/cancelled.
 - Custom checks: nonnegative amount, valid service-date order, and an end date for cancelled contracts.
-- Raw count = staging count + quarantine count; each raw row reference appears exactly once across the outputs.
-- Fail `dbt build` when accepted records violate required-field, accepted-value, service-date, or source-row uniqueness checks, or when row accounting fails. Dependent models selected in the same build are skipped when their upstream tests fail. Previously built published tables may remain available, but are not guaranteed to be current. Quarantined records alone do not fail the build.
 
 #### `staging.stg_workspaces`
 
-dbt **table**, rebuilt each run. `staging.quarantine_workspaces` is also rebuilt each run and follows the quarantine rules below. One row per accepted record from `raw.workspaces`; `source_row_id` is the logical audit key within this source.
-
-DuckDB `rowid` provides source-row identity for the supplied, unchanged raw table; it is not guaranteed to remain stable if the raw table is recreated.
+One row per source record from `raw.workspaces`.
 
 ```sql
 CREATE TABLE staging.stg_workspaces (
@@ -363,22 +338,17 @@ CREATE TABLE staging.stg_workspaces (
 
 **Row validation**
 
-- Send missing workspace IDs, invalid creation/deletion dates, and deletion dates before creation dates to `staging.quarantine_workspaces`, with the source-row reference and reason. A blank deletion date is valid; an unparseable date is not.
-- Keep missing or unmatched customer references for explicit unresolved mapping downstream.
-- Exclude workspace names from both staging and quarantine.
+- Missing workspace IDs, invalid creation/deletion dates, and deletion dates before creation dates fail dbt validation. A blank deletion date is valid; an unparseable date is not.
+- Missing or unknown customer references remain unresolved; do not require a match to `raw.accounts` during staging validation.
 
 **dbt tests and validations**
 
-- `not_null`: `source_row_id`, `workspace_id`, `created_at`; `unique`: `source_row_id`.
+- `not_null`: `source_row_id`, `workspace_id`, `created_at`; `unique`: `workspace_id`, `source_row_id`.
 - Custom check: `deleted_at` is null or on/after `created_at`.
-- Raw count = staging count + quarantine count; each raw row reference appears exactly once across the outputs.
-- Fail `dbt build` when accepted records violate required-field, workspace lifecycle-date, or source-row uniqueness checks, or when row accounting fails. Dependent models selected in the same build are skipped when their upstream tests fail. Previously built published tables may remain available, but are not guaranteed to be current. Quarantined records alone do not fail the build.
 
 #### `staging.stg_usage`
 
-dbt **table**, rebuilt each run. `staging.quarantine_usage` is also rebuilt each run and follows the quarantine rules below. One row per accepted record from `raw.usage_batch1`; `source_row_id` is the logical audit key within this source.
-
-DuckDB `rowid` provides source-row identity for the supplied, unchanged raw table; it is not guaranteed to remain stable if the raw table is recreated.
+One row per source record from `raw.usage_batch1`.
 
 ```sql
 CREATE TABLE staging.stg_usage (
@@ -406,23 +376,19 @@ CREATE TABLE staging.stg_usage (
 
 **Row validation**
 
-- Send missing usage IDs, invalid months, and invalid/negative counts to `staging.quarantine_usage`, with the source-row reference and reason.
-- Normalize valid `usage_month` dates to the first day of the month.
-- Validate count values as nonnegative whole numbers before casting, so fractional values cannot be rounded into integers. Reject values exceeding `BIGINT` capacity.
+- Normalize valid `usage_month` values to the first day of the month.
+- Validate counts as nonnegative whole numbers before casting; fractional, invalid, negative, or out-of-range values fail dbt validation.
+- Missing required usage IDs or invalid months fail dbt validation.
 - Keep missing or unmatched workspace references for explicit unresolved mapping downstream.
 
 **dbt tests and validations**
 
-- `not_null`: `source_row_id`, `usage_id`, `usage_month`, `active_users`, `api_calls`; `unique`: `source_row_id`.
+- `not_null`: `source_row_id`, `usage_id`, `usage_month`, `active_users`, `api_calls`; `unique`: `source_row_id` and normalized (`workspace_id`, `usage_month`) for records with a workspace ID.
 - Custom checks: nonnegative counts and first-of-month `usage_month`.
-- Raw count = staging count + quarantine count; each raw row reference appears exactly once across the outputs.
-- Fail `dbt build` when accepted records violate required-field, usage-month, count-validity, or source-row uniqueness checks, or when row accounting fails. Dependent models selected in the same build are skipped when their upstream tests fail. Previously built published tables may remain available, but are not guaranteed to be current. Quarantined records alone do not fail the build.
 
 #### `staging.stg_cloud_costs`
 
-dbt **table**, rebuilt each run. `staging.quarantine_cloud_costs` is also rebuilt each run and follows the quarantine rules below. One row per accepted record from `raw.cloud_costs`; `source_row_id` is the logical audit key within this source.
-
-DuckDB `rowid` provides source-row identity for the supplied, unchanged raw table; it is not guaranteed to remain stable if the raw table is recreated.
+One row per source record from `raw.cloud_costs`.
 
 ```sql
 CREATE TABLE staging.stg_cloud_costs (
@@ -450,29 +416,22 @@ CREATE TABLE staging.stg_cloud_costs (
 
 **Row validation**
 
-- Send missing cost IDs, invalid months, and invalid/negative cost amounts to `staging.quarantine_cloud_costs`, with the source-row reference and reason.
+- Missing required fields, malformed reporting months, and invalid/negative financial amounts fail dbt validation.
 - Reject compute or storage costs with more than two nonzero decimal places rather than silently rounding them. Trailing zeros are permitted; for example, `12.340` is valid, but `12.345` is not.
 - Normalize valid cost months to the first day of the month.
-- Keep missing or unmatched workspace references for explicit unresolved mapping downstream.
+- Preserve missing or unknown workspace IDs and their unallocated cost amounts for downstream mapping exceptions.
+- Allow multiple legitimate cost records for the same workspace and reporting month.
 
 **dbt tests and validations**
 
 - `not_null`: `source_row_id`, `cost_id`, `usage_month`, `compute_cost_usd`, `storage_cost_usd`; `unique`: `source_row_id`.
 - Custom checks: nonnegative compute/storage costs and first-of-month `usage_month`.
-- Raw count = staging count + quarantine count; each raw row reference appears exactly once across the outputs.
-- Fail `dbt build` when accepted records violate required-field, cost-validity, usage-month, or source-row uniqueness checks, or when row accounting fails. Dependent models selected in the same build are skipped when their upstream tests fail. Previously built published tables may remain available, but are not guaranteed to be current. Quarantined records alone do not fail the build.
-
-
-
-
-
-
 
 ### 3.3 Canonical Models
 
 #### `canonical.dim_customer`
 
-dbt **table**, rebuilt each run from `staging.stg_accounts`. One row per customer; `customer_id` is the logical primary key. This is the latest customer snapshot, not customer history.
+dbt **table**, rebuilt each run from `staging.stg_accounts`. One row per validated customer; `customer_id` is the logical primary key. Each validated staging account maps directly to one canonical customer.
 
 ```sql
 CREATE TABLE canonical.dim_customer (
@@ -487,25 +446,19 @@ CREATE TABLE canonical.dim_customer (
 
 **Transformation rules**
 
-- Rename `account_id` to `customer_id` and `account_name` to `customer_name`. Group records by normalized `customer_id`, not customer name.
-- For each normalized `customer_id`, use `updated_at` to select records. Select a single record even with a null timestamp; otherwise select the latest when all timestamps are present. Quarantine the entire group if any timestamp is null (`missing_selection_timestamp`) or latest-timestamp ties have conflicting business attributes (`conflicting_latest_records`). For identical latest ties, including matching null attributes, select the smallest `source_row_id` and audit the others as duplicates; never use it to resolve missing timestamps or conflicting attributes. Keep the selected customer name, segment, region, timestamp, and source-row ID.
-- Compare customer name, segment, and region as business attributes, excluding selection timestamps, batch metadata, and source-row IDs. Rebuild `canonical.quarantine_customers` each run with every contributing record’s `source_table`, `source_row_id`, normalized `customer_id`, and `rejection_reasons`, plus safe attribution, period, amount, or count fields needed for reconciliation. Exclude restricted PII; ambiguous groups have no selected or duplicate/superseded audit outcome.
-- Rebuild `canonical.customer_record_audit` on each run to track unselected records from nonquarantined groups. Include `source_row_id`, `customer_id`, `disposition`, and `selected_source_row_id`.
-- Mark records as `duplicate` when their customer name, segment, and region match the selected record, including null values. Otherwise, mark them as `superseded`.
-- Keep emails, notes, and other sensitive fields out of audit and canonical quarantine outputs.
+- Rename `account_id` to `customer_id` and `account_name` to `customer_name`. Preserve `segment`, `region`, `updated_at`, and `source_row_id`.
+- Keep restricted PII, including contact emails and account notes, out of the dimension.
 
 **dbt tests and validations**
 
-- Verify canonical quarantine reasons, source lineage, and PII exclusion against the rules above.
+- Staging enforces normalized `account_id` uniqueness and required-field validity.
 - `not_null`: `customer_id`, `customer_name`, `source_row_id`; `unique`: `customer_id` and `source_row_id`.
-- `relationships`: selected `source_row_id` references `staging.stg_accounts`. Custom lineage check: the selected staging `account_id` equals canonical `customer_id`.
-- Verify every staged account row appears exactly once as selected, in `canonical.customer_record_audit`, or in `canonical.quarantine_customers`, with no missing or double-counted rows.
-- Audit disposition must be `superseded` or `duplicate`, consistent with the attribute comparison above. Each audit record’s `selected_source_row_id` must reference the selected canonical row for the same customer. Verify selection or whole-group quarantine follows the selection rules above.
-- Fail `dbt build` when required-field, uniqueness, selection, lineage, audit-integrity, or row-accounting tests fail. Expected canonical quarantine alone does not fail the build. Dependent models selected in the same build are skipped when upstream tests fail. Previously built published tables may remain available but may be stale.
+- `relationships`: `source_row_id` references `staging.stg_accounts`. Custom lineage check: staging `account_id` equals canonical `customer_id`.
+- Verify restricted PII is excluded. Fail `dbt build` on required-field, uniqueness, lineage, or PII-protection violations. Dependent models selected in the same build are skipped when upstream tests fail. Previously built published tables may remain available but may be stale.
 
 #### `canonical.dim_workspaces`
 
-dbt **table**, rebuilt each run; one row per normalized `workspace_id` (logical primary key). All columns come directly from the selected `staging.stg_workspaces` record.
+dbt **table**, rebuilt each run directly from `staging.stg_workspaces`. One row per validated workspace; `workspace_id` is the logical primary key.
 
 ```sql
 CREATE TABLE canonical.dim_workspaces (
@@ -518,23 +471,22 @@ CREATE TABLE canonical.dim_workspaces (
 
 **Transformation rules**
 
-- Group staging records by normalized `workspace_id`. Accept a single record; deduplicate records with identical normalized `workspace_name`, `crm_account_ref`, `created_at`, and `deleted_at` into one canonical record, auditing redundant rows as duplicates. If any business values differ, quarantine the entire group as `conflicting_workspace_records`, with no canonical winner. Use null-safe comparisons; source-row references provide lineage only, never acceptance or business-value precedence.
-- Use normalized staging references and parsed dates. Compare workspace names through source-row lineage in access-restricted raw storage, trimming whitespace and treating empty names as null; do not expose names in downstream outputs.
-- Rebuild `canonical.workspace_record_audit` each run for identical unselected records, retaining `source_row_id`, normalized `workspace_id`, `disposition` = `duplicate`, and `selected_source_row_id`. Rebuild `canonical.quarantine_workspaces` with every conflicting record’s `source_table`, `source_row_id`, normalized `workspace_id`, and `rejection_reasons`, plus safe customer references and lifecycle dates for investigation and reporting exclusions. Exclude workspace names and other restricted PII; quarantined rows are not audited as superseded.
+- Preserve `workspace_id`, `created_at`, `deleted_at`, and `source_row_id` from each staging workspace.
+- Retain workspaces with missing or unknown customer references for resolution in `canonical.map_customer_workspaces`; customer references remain in staging.
+- Keep restricted PII, including workspace names, out of the dimension.
 
 **dbt tests and validations**
 
+- Staging enforces normalized `workspace_id` uniqueness and required-field validity.
 - `not_null`: `workspace_id`, `created_at`, `source_row_id`; `unique`: `workspace_id` and `source_row_id`.
-- `relationships`: selected `source_row_id` references `staging.stg_workspaces`. Custom lineage check: the selected staging row has the same workspace ID, creation date, and deletion date as the canonical row.
+- `relationships`: `source_row_id` references `staging.stg_workspaces`. Custom lineage check: the staging row has the same workspace ID, creation date, and deletion date as the canonical row.
 - Check that `deleted_at` is null or on/after `created_at`.
-- Verify every staged workspace row appears exactly once as selected, in `canonical.workspace_record_audit`, or in `canonical.quarantine_workspaces`, with no missing or double-counted rows. Check quarantine reasons, source lineage, and PII exclusion.
-- Audit disposition must be `duplicate`, with matching normalized business values and a `selected_source_row_id` referencing the canonical row for the same workspace. Verify identical groups produce one canonical record, any business-value conflict quarantines every group member, and source-row ordering never determines trusted business values.
-- Fail `dbt build` when required-field, uniqueness, selection, lineage, lifecycle, audit-integrity, or row-accounting tests fail. Expected workspace quarantine alone does not fail the build. Dependent models selected in the same build are skipped when upstream tests fail. Previously built published tables may remain available but may be stale.
+- Fail `dbt build` on required-field, uniqueness, lineage, lifecycle, or PII-protection violations. Missing or unknown customer references do not fail validation solely because attribution is unresolved. Dependent models selected in the same build are skipped when upstream tests fail. Previously built published tables may remain available but may be stale.
 
 
 #### `canonical.map_customer_workspaces`
 
-dbt **table**, rebuilt each run from `canonical.dim_workspaces`, `canonical.dim_customer`, and `staging.stg_workspaces`. One row per workspace; `workspace_id` is the logical primary key. A customer can own multiple workspaces; a workspace has at most one resolved customer.
+dbt **table**, rebuilt each run from `canonical.dim_workspaces` and `canonical.dim_customer`, using customer references from `staging.stg_workspaces`. One row per workspace; `workspace_id` is the logical primary key. A customer can own multiple workspaces; a workspace has at most one resolved customer.
 
 ```sql
 CREATE TABLE canonical.map_customer_workspaces (
@@ -546,27 +498,21 @@ CREATE TABLE canonical.map_customer_workspaces (
 
 **Transformation rules**
 
-- Use `canonical.dim_workspaces` as the workspace list, excluding quarantined workspaces. Check all matching `staging.stg_workspaces` records for their normalized `crm_account_ref` values, ignoring blanks when counting distinct references.
-- **Resolved:** If there is exactly one distinct nonblank customer reference and it matches `canonical.dim_customer.customer_id`, assign that customer and set `resolution_status` to `resolved`.
-- **Unresolved:** Leave `customer_id` null and set `resolution_status` to `unresolved_customer` when:
-  - **Missing customer:** All references are blank or null.
-  - **Unknown customer:** One distinct reference exists but does not match a canonical customer.
-  - **Conflicting customer:** Multiple distinct references exist, even if some are valid. Never choose an owner arbitrarily.
-- Rebuild `canonical.workspace_mapping_audit` each run to track unresolved mappings. Include `workspace_id`, `source_row_id`, nullable normalized `crm_account_ref`, and `issue_reason` (`missing_customer`, `unknown_customer`, or `conflicting_customer`).
-- For missing or unknown mappings, retain the relevant staging source rows. For conflicts, retain every contributing staging row.
-- Do not create a separate mapping quarantine table or include sensitive fields such as workspace names, emails, or notes. Unresolved mappings do not automatically fail `dbt build`.
+- Use `canonical.dim_workspaces` as the workspace list. Retrieve each workspace’s normalized `crm_account_ref` from `staging.stg_workspaces` by workspace ID, preserving source traceability.
+- Left join the customer reference to `canonical.dim_customer.customer_id`, preserving workspaces with missing or unmatched references.
+- Set `resolution_status` to `resolved` and populate `customer_id` on a match. Otherwise, set `unresolved_customer` and leave `customer_id` null.
+- Keep restricted PII, including workspace names, emails, and notes, out of the model.
 
 **dbt tests and validations**
 
 - `not_null`: `workspace_id`, `resolution_status`; `unique`: `workspace_id`; `accepted_values`: status = resolved/unresolved_customer.
 - `relationships`: workspace ID references `dim_workspaces`; nonnull customer ID references `dim_customer`. Resolved rows require a customer ID; unresolved rows require null.
-- Every canonical workspace appears exactly once; quarantined workspace IDs must not appear in the mapping. Verify assignments against all corresponding `staging.stg_workspaces` records and the resolution rules above.
-- Every unresolved workspace has audit records with the correct reason and source-row references. Each audit record references an unresolved workspace and an actual staging row belonging to it; accepted reasons are `missing_customer`, `unknown_customer`, and `conflicting_customer`.
-- Fail `dbt build` when mapping integrity, required-field, uniqueness, relationship, resolution, or audit-consistency tests fail. Dependent models selected in the same build are skipped when upstream tests fail. Previously built published tables may remain available but may be stale.
+- Verify every canonical workspace appears exactly once and assignments match its staging customer reference and the resolution rules above.
+- Fail `dbt build` when mapping integrity, required-field, uniqueness, relationship, or resolution tests fail. Unresolved customer attribution alone does not fail the build. Dependent models selected in the same build are skipped when upstream tests fail. Previously built published tables may remain available but may be stale.
 
 #### `canonical.fct_contracts`
 
-dbt **table**, rebuilt each run from `staging.stg_contracts` and `canonical.dim_customer`. One row per normalized `contract_id` (logical primary key), retaining the latest contract record for both month-end subscription value and reporting-month revenue.
+dbt **table**, rebuilt each run directly from `staging.stg_contracts`, with customer attribution from `canonical.dim_customer`. One row per validated contract; `contract_id` is the logical primary key.
 
 ```sql
 CREATE TABLE canonical.fct_contracts (
@@ -587,25 +533,22 @@ CREATE TABLE canonical.fct_contracts (
 
 **Transformation rules**
 
-- For each normalized `contract_id`, use `extracted_at` to select records. Select a single record even with a null timestamp; otherwise select the latest when all timestamps are present. Quarantine the entire group if any timestamp is null (`missing_selection_timestamp`) or latest-timestamp ties have conflicting business attributes (`conflicting_latest_records`). For identical latest ties, including matching null attributes, select the smallest `source_row_id` and audit the others as duplicates; never use it to resolve missing timestamps or conflicting attributes.
-- Compare account ID, plan, billing period, amount, service dates, and status as business attributes, excluding selection timestamps, batch metadata, and source-row IDs. Rebuild `canonical.quarantine_contracts` each run with every contributing record’s `source_table`, `source_row_id`, normalized `contract_id`, and `rejection_reasons`, plus safe attribution, period, amount, or count fields needed for reconciliation. Exclude restricted PII; ambiguous groups have no selected or duplicate/superseded audit outcome.
-- Match the selected record's `account_id` to `canonical.dim_customer.customer_id`. If matched, populate `customer_id` and set the status to `resolved`. Otherwise, leave `customer_id` null and set the status to `unresolved_customer`.
-- Keep all attributes from the selected contract. Contract start and end dates are inclusive. Retain cancelled, ended, and future contracts in the fact table.
-- Rebuild `canonical.contract_record_audit` each run to track unselected records from nonquarantined groups. Include `source_row_id`, `contract_id`, and `selected_source_row_id`. Mark records as `duplicate` when their business attributes match the selected record; otherwise, mark them as `superseded`.
-- Also record selected contracts with unresolved customer attribution in the audit table using `unresolved_customer`. These contracts remain in the fact table and are tracked separately from duplicate and superseded records.
+- Preserve each staging contract’s identifiers, financial fields, service dates, status, batch metadata, extraction timestamp, and `source_row_id`.
+- Left join `account_id` to `canonical.dim_customer.customer_id`. On a match, populate `customer_id` and set `resolution_status` to `resolved`; otherwise, leave `customer_id` null and use `unresolved_customer`. Preserve contracts with missing or unknown customer references.
+- Contract start and end dates are inclusive. Retain cancelled, ended, and future contracts in the fact table.
+- Support annual and monthly billing periods. Distinct valid contracts contribute additively, including when service dates overlap, under the existing annualized subscription value and estimated monthly revenue rules.
 
 **dbt tests and validations**
 
-- Verify canonical quarantine reasons, source lineage, and PII exclusion against the rules above.
+- Staging validates normalized `contract_id` uniqueness, required fields, financial values, billing periods, statuses, and service dates.
 - `not_null`: `contract_id`, `resolution_status`, `billing_period`, `recurring_amount_usd`, `starts_on`, `status`, `source_row_id`; `unique`: `contract_id` and `source_row_id`.
 - `accepted_values`: resolution = `resolved`/`unresolved_customer`; billing period = `annual`/`monthly`; status = `active`/`cancelled`. Validate nonnegative amounts, service-date order, and required end dates for cancelled contracts.
-- Validate nonnull customer IDs against `dim_customer`, selected source-row lineage and attributes against `stg_contracts`, and selection or whole-group quarantine against the selection rules above. Resolved rows require a customer ID; unresolved rows require null.
-- Every staged contract row must be selected, audited as duplicate/superseded, or retained in `canonical.quarantine_contracts` exactly once. Reconcile source counts and amounts across these outcomes; unresolved attribution entries do not count as additional source records.
-- Unresolved customer attribution or expected canonical quarantine alone does not fail `dbt build`. Integrity, lineage, selection, or row-accounting violations fail the build and skip selected downstream dependencies.
+- Validate nonnull customer IDs against `dim_customer` and source-row lineage and attributes against `stg_contracts`. Verify customer attribution matches the staging `account_id`; resolved rows require a customer ID and unresolved rows require null.
+- Invalid contracts, duplicate normalized contract IDs, or lineage/attribution violations fail `dbt build` and skip selected downstream dependencies. Unresolved customer attribution alone does not fail the build.
 
 #### `canonical.fct_workspace_usage`
 
-dbt **table**, rebuilt each run from `staging.stg_usage` and `canonical.map_customer_workspaces`. One row per workspace and usage month; records without a workspace ID remain individually identifiable by `usage_id`.
+dbt **table**, rebuilt each run from `staging.stg_usage`, with customer attribution from `canonical.map_customer_workspaces`. One row per validated workspace-month usage record; records without a workspace ID remain individually identifiable by `usage_id` and `source_row_id`.
 
 ```sql
 CREATE TABLE canonical.fct_workspace_usage (
@@ -624,25 +567,22 @@ CREATE TABLE canonical.fct_workspace_usage (
 
 **Transformation rules**
 
-- Deduplicate first by normalized `usage_id`, then by (`workspace_id`, `usage_month`) for nonnull workspace IDs, using `extracted_at` at both steps. Select a single record even with a null timestamp; otherwise select the latest when all timestamps are present. Quarantine the entire group if any timestamp is null (`missing_selection_timestamp`) or latest-timestamp ties have conflicting business attributes (`conflicting_latest_records`). For identical latest ties, including matching null attributes, select the smallest `source_row_id` and audit the others as duplicates; never use it to resolve missing timestamps or conflicting attributes. First-step quarantined groups do not enter the second step.
-- Compare workspace, month, and counts as business attributes, excluding selection timestamps, batch metadata, and source-row IDs. Rebuild `canonical.quarantine_usage` each run with every contributing record’s `source_table`, `source_row_id`, normalized `usage_id`, and `rejection_reasons`, plus safe attribution, period, amount, or count fields needed for reconciliation. Exclude restricted PII; ambiguous groups have no selected or duplicate/superseded audit outcome.
-- Treat repeated workspace-month records as replacements of monthly totals, not additional usage. Keep records with missing workspace IDs individually identifiable.
-- Match each `workspace_id` to `canonical.map_customer_workspaces`. Use `resolved` or `unresolved_customer` when a mapping exists, `missing_workspace` when the ID is null, and `unknown_workspace` when no mapping exists. Populate `customer_id` only for resolved records.
+- Preserve each staging record’s usage and workspace identifiers, `usage_month`, `active_users`, `api_calls`, batch metadata, extraction timestamp, and `source_row_id`, without aggregation or discarding unresolved records.
+- Left join `workspace_id` to `canonical.map_customer_workspaces`. Use `resolved` when the workspace maps to a known customer, `unresolved_customer` when it exists without a resolved customer, `unknown_workspace` when a nonnull ID has no canonical workspace, and `missing_workspace` when the ID is null. Populate `customer_id` only for resolved records.
+- Preserve unresolved usage for `published.monthly_data_quality_exceptions`; never assign it to another customer’s usage totals.
 - Keep historical usage for deleted workspaces, using the current workspace mapping for customer attribution.
-- Rebuild `canonical.usage_record_audit` each run to track duplicate/superseded records from nonquarantined groups excluded during either deduplication step. Include `source_row_id`, `usage_id`, `disposition`, and `selected_source_row_id`. Mark records as `duplicate` when their business values match the selected record; otherwise, mark them as `superseded`. Preserve source-row traceability across both steps. Finalize outcomes after both steps: if a second-step group is ambiguous, quarantine its candidates and all contributing original staging rows, replacing provisional audit outcomes. Keep one final outcome per original row; for nonquarantined groups, retain audit links through both steps to the final selected record.
 
 **dbt tests and validations**
 
-- Verify canonical quarantine reasons, source lineage, and PII exclusion against the rules above.
+- Staging validates normalized workspace-month uniqueness where a workspace ID exists, valid reporting months, and nonnegative usage counts.
 - `not_null`: `usage_id`, `resolution_status`, `usage_month`, `active_users`, `api_calls`, `source_row_id`; `unique`: `usage_id`, `source_row_id`, and (`workspace_id`, `usage_month`) where workspace ID is nonnull.
 - `accepted_values`: `resolved`, `unresolved_customer`, `missing_workspace`, `unknown_workspace`. Check nonnegative counts and first-of-month usage dates.
-- Validate source-row lineage, selected values, customer relationships, mapping status, and selection or whole-group quarantine against the selection rules above at both deduplication steps.
-- Every staging row must appear exactly once as selected, audited, or retained in `canonical.quarantine_usage`. Reconcile staging counts and usage totals against these source-record outcomes, without counting a row twice across steps or adding audited/quarantined records into canonical metrics.
-- Fail `dbt build` on integrity, lineage, selection, or reconciliation violations. Unresolved workspace/customer attribution or expected canonical quarantine alone does not fail the build.
+- Validate source-row lineage and usage values against `stg_usage`, customer relationships, and mapping status. Only resolved records have a nonnull `customer_id`.
+- Invalid records, duplicate normalized workspace-month keys, or lineage/attribution consistency violations fail `dbt build`. Expected unresolved workspace/customer attribution alone does not fail the build.
 
 #### `canonical.fct_workspace_cloud_costs`
 
-dbt **table**, rebuilt each run from `staging.stg_cloud_costs` and `canonical.map_customer_workspaces`. One row per normalized `cost_id` (logical primary key); multiple charges can belong to the same workspace and month.
+dbt **table**, rebuilt each run from `staging.stg_cloud_costs`, with customer attribution from `canonical.map_customer_workspaces`. One row per validated source cloud-cost record; multiple charges can belong to the same workspace and month.
 
 ```sql
 CREATE TABLE canonical.fct_workspace_cloud_costs (
@@ -661,27 +601,25 @@ CREATE TABLE canonical.fct_workspace_cloud_costs (
 
 **Transformation rules**
 
-- For each normalized `cost_id`, use `extracted_at` to select records. Select a single record even with a null timestamp; otherwise select the latest when all timestamps are present. Quarantine the entire group if any timestamp is null (`missing_selection_timestamp`) or latest-timestamp ties have conflicting business attributes (`conflicting_latest_records`). For identical latest ties, including matching null attributes, select the smallest `source_row_id` and audit the others as duplicates; never use it to resolve missing timestamps or conflicting attributes.
-- Compare workspace, month, and compute/storage amounts as business attributes, excluding selection timestamps, batch metadata, and source-row IDs. Rebuild `canonical.quarantine_cloud_costs` each run with every contributing record’s `source_table`, `source_row_id`, normalized `cost_id`, and `rejection_reasons`, plus safe attribution, period, amount, or count fields needed for reconciliation. Exclude restricted PII; ambiguous groups have no selected or duplicate/superseded audit outcome.
-- Keep separate charges with different `cost_id` values, even when they belong to the same workspace and month. Do not aggregate costs at the workspace-month level in this fact table.
-- Match each `workspace_id` to `canonical.map_customer_workspaces`. Use `resolved` or `unresolved_customer` when a mapping exists, `missing_workspace` when the ID is null, and `unknown_workspace` when no mapping exists. Populate `customer_id` only for resolved records.
+- Preserve each staging record’s cost and workspace identifiers, `usage_month`, compute/storage amounts, batch metadata, extraction timestamp, and `source_row_id`. Keep exact financial amounts without rounding or dropping records during attribution.
+- Retain multiple legitimate charges for the same workspace-month; do not deduplicate or aggregate by workspace and month.
+- Left join `workspace_id` to `canonical.map_customer_workspaces`. Use `resolved` when the workspace maps to a known customer, `unresolved_customer` when it exists without a resolved customer, `unknown_workspace` when a nonnull ID has no canonical workspace, and `missing_workspace` when the ID is null. Populate `customer_id` only for resolved records.
+- Preserve unresolved costs for `published.monthly_data_quality_exceptions`; never assign them to another customer’s cloud-cost totals.
 - Keep historical costs for deleted workspaces, using the current workspace mapping for customer attribution.
-- Rebuild `canonical.cloud_cost_record_audit` each run to track unselected records from nonquarantined groups. Include `source_row_id`, `cost_id`, `disposition`, and `selected_source_row_id`. Mark records as `duplicate` when their business values match the selected record; otherwise, mark them as `superseded`.
 
 **dbt tests and validations**
 
-- Verify canonical quarantine reasons, source lineage, and PII exclusion against the rules above.
-- `not_null`: `cost_id`, `resolution_status`, `usage_month`, `compute_cost_usd`, `storage_cost_usd`, `source_row_id`; `unique`: `cost_id` and `source_row_id`.
-- `accepted_values`: `resolved`, `unresolved_customer`, `missing_workspace`, `unknown_workspace`. Check nonnegative costs and first-of-month usage dates.
-- Validate source-row lineage, selected amounts, customer relationships, mapping status, and selection or whole-group quarantine against the selection rules above.
-- Every staging row must appear exactly once as selected, audited, or retained in `canonical.quarantine_cloud_costs`. Reconcile staging compute/storage totals against these source-record outcomes. Canonical financial totals include selected charges only, never audited or quarantined records.
-- Fail `dbt build` on integrity, lineage, selection, or reconciliation violations. Unresolved attribution or expected canonical quarantine alone does not fail the build.
+- `not_null`: `cost_id`, `resolution_status`, `usage_month`, `compute_cost_usd`, `storage_cost_usd`, `source_row_id`; `unique`: `cost_id` and `source_row_id`. Workspace IDs may be null; workspace-month keys need not be unique.
+- `accepted_values` for `resolution_status`: `resolved`, `unresolved_customer`, `missing_workspace`, `unknown_workspace`. Check nonnegative costs, exact two-decimal financial precision, and first-of-month usage dates.
+- Validate source-row lineage and exact amounts against `stg_cloud_costs`, customer relationships, and mapping status. Only resolved records have a nonnull `customer_id`.
+- Reconcile staging compute/storage totals against resolved and unresolved canonical charges without double-counting.
+- Invalid source records or integrity, lineage, attribution-consistency, or reconciliation violations fail `dbt build`. Expected unresolved attribution alone does not fail the build.
 
 ### 3.4 Intermediate Customer Metrics
 
 #### `intermediate.int_customer_subscription_metrics`
 
-dbt **table**, rebuilt each run from `canonical.dim_customer`, `canonical.fct_contracts`, `canonical.dim_workspaces`, and `canonical.map_customer_workspaces`, using reporting months from `staging.stg_usage` and `staging.stg_cloud_costs`. One row per customer and month; (`customer_id`, `reporting_month`) is the logical primary key. Full refresh recalculates totals from the current canonical records.
+dbt **table**, rebuilt each run from `canonical.dim_customer`, `canonical.fct_contracts`, `canonical.dim_workspaces`, and `canonical.map_customer_workspaces`, using reporting months from `staging.stg_usage` and `staging.stg_cloud_costs`. One row per customer and month; (`customer_id`, `reporting_month`) is the logical primary key.
 
 ```sql
 CREATE TABLE intermediate.int_customer_subscription_metrics (
@@ -696,22 +634,21 @@ CREATE TABLE intermediate.int_customer_subscription_metrics (
 
 - Set the reporting cutoff to the latest valid `usage_month` present in both `staging.stg_usage` and `staging.stg_cloud_costs`. Match months only, not workspace IDs. Use source data, not the build date; if no common month exists, fail validation with a clear error. Check workspace-month usage/cost record coverage separately for customer-month publication.
 - Generate reporting months from the earliest known contract start or mapped workspace creation through the source-derived cutoff. Include each customer beginning with their earliest reliable contract start or mapped workspace creation.
-- Calculate annualized subscription value (ASV) at month-end. Sum all distinct annual contract amounts unchanged and monthly contract amounts multiplied by 12. Include contracts effective on the final day of the month, using inclusive start/end dates.
-- Calculate monthly subscription revenue independently. For each contract, divide its annualized amount by 12, multiply by active service days within the reporting month, and divide by calendar days in that month. Sum distinct contract contributions by customer/month before rounding to two decimal places. Overlapping contracts are additive, not replacements; each contributes according to its own start/end dates.
-- Aggregate resolved contracts by customer/month before joining to the customer/month spine. Use zero when no eligible contracts exist.
-- Include only contracts with `resolution_status = 'resolved'` in customer metrics. Unresolved contracts remain traceable in the canonical fact and its audit. Treat unresolved attribution as a data-quality exception rather than automatically failing this model. Exclude canonical-quarantined contracts from calculations. Do not consider affected totals complete when unresolved or quarantined contracts could change them.
+- Calculate annualized subscription value (ASV) at month-end. Sum all distinct annual contract amounts unchanged and monthly contract amounts multiplied by 12. Include overlapping contracts additively when effective on the final day of the month, using inclusive start/end dates. Contracts that ended before month-end contribute zero to ASV.
+- Calculate monthly subscription revenue independently. For each contract, divide its annualized amount by 12, multiply by active service days within the reporting month, and divide by calendar days in that month. Sum distinct contract contributions by customer/month before rounding to two decimal places. Include overlapping contracts additively and cancelled contracts through their inclusive end dates.
+- Aggregate resolved contracts by customer/month before joining to the customer/month spine. Use zero when no eligible contracts exist, but not for missing or unreliable contract data.
+- Include only contracts with `resolution_status = 'resolved'`; never assign unresolved contracts to another customer. Unresolved attribution alone does not fail the model, but affected totals are unreliable when those contracts could change them.
 
 **dbt tests and validations**
 
 - `not_null`: all columns; `unique`: (`customer_id`, `reporting_month`); `relationships`: `customer_id` references `canonical.dim_customer`.
-- Check nonnegative amounts and first-of-month reporting dates. Verify the defined cutoff, including failure when no common month exists, and spine coverage for every applicable customer/month.
+- Check nonnegative amounts, two-decimal monetary precision, and first-of-month reporting dates. Verify the defined cutoff, including failure when no common month exists, and spine coverage for every applicable customer/month.
 - Validate ASV against month-end eligible contracts and revenue against service-day proration, including partial months and customers without eligible contracts. Verify joins do not multiply contract amounts.
-- Reconcile calculated values against selected canonical contract records, accounting for unresolved attribution and canonical quarantine.
-- Fail `dbt build` on integrity, calculation, uniqueness, or reconciliation violations. Unresolved attribution or expected canonical quarantine alone does not fail the build.
+- Fail `dbt build` on integrity, calculation, uniqueness, or contract-consistency violations.
 
 #### `intermediate.int_customer_monthly_usage`
 
-dbt **table**, rebuilt each run from `intermediate.int_customer_subscription_metrics` and `canonical.fct_workspace_usage`. One resolved row per customer/month in the subscription metrics spine, plus unresolved totals grouped by reason/month. (`customer_id`, `reporting_month`) is the logical key for resolved rows; (`resolution_status`, `reporting_month`) identifies unresolved rows.
+dbt **table**, rebuilt each run from `canonical.fct_workspace_usage`, using the customer/month spine from `intermediate.int_customer_subscription_metrics`. One row per customer and reporting month with resolved usage records; (`customer_id`, `reporting_month`) is the logical primary key.
 
 ```sql
 CREATE TABLE intermediate.int_customer_monthly_usage (
@@ -725,23 +662,23 @@ CREATE TABLE intermediate.int_customer_monthly_usage (
 
 **Transformation rules**
 
-- Reuse the customer/month spine from `intermediate.int_customer_subscription_metrics`. Produce one `resolved` row for each customer/month in that spine.
-- Aggregate selected canonical usage by resolved `customer_id` and `usage_month` before joining to the spine. Sum `active_users` and `api_calls`; use zero when no usage records exist for a customer/month. This intermediate zero does not confirm activity or record coverage and must not replace missing data in published metrics.
-- Usage totals reflect observed records. Active users are summed workspace counts, not distinct people across workspaces.
-- Group unattributed usage by (`resolution_status`, `usage_month`), with null `customer_id`. Preserve `missing_workspace`, `unknown_workspace`, and `unresolved_customer` totals, including months outside the customer/month spine.
-- Do not include superseded or canonical-quarantined usage records in metric totals; their absence does not confirm record coverage.
+- Include only canonical usage with `resolution_status = 'resolved'` for customer/months in the subscription metrics spine.
+- Group by `customer_id` and `usage_month`, using `usage_month` as `reporting_month`. Sum `active_users` and `api_calls` across the customer’s workspaces and set `resolution_status` to `resolved`.
+- Usage totals reflect observed records. Active users are additive workspace counts, not distinct people across workspaces.
+- Preserve observed zero counts, but do not generate synthetic zero-usage rows when records are missing. Aggregation does not prove coverage across all active workspaces; downstream completeness and publication safeguards still apply.
+- Leave unresolved usage in the canonical fact for reporting through `published.monthly_data_quality_exceptions`; do not include it in customer totals or assign it to placeholder customers.
 
 **dbt tests and validations**
 
-- `not_null`: `resolution_status`, `reporting_month`, `product_usage_active_users`, `product_usage_api_calls`; `unique`: (`customer_id`, `reporting_month`) for resolved rows and (`resolution_status`, `reporting_month`) for unresolved rows.
-- `relationships`: nonnull `customer_id` references `canonical.dim_customer`. Accepted statuses: `resolved`, `missing_workspace`, `unknown_workspace`, `unresolved_customer`. Only resolved rows have nonnull customer IDs.
-- Check nonnegative counts and first-of-month reporting dates. Verify exactly one resolved row for every customer/month in the subscription metrics spine.
-- Reconcile resolved and unresolved usage totals against selected canonical usage records by month, without multiplying counts through joins.
-- Fail `dbt build` on integrity, uniqueness, coverage, or reconciliation violations. Unresolved attribution or expected canonical quarantine alone does not fail the build.
+- `not_null`: all columns; `unique`: (`customer_id`, `reporting_month`).
+- `relationships`: `customer_id` references `canonical.dim_customer`; `accepted_values` for `resolution_status`: `resolved`.
+- Check nonnegative counts and first-of-month reporting dates. Verify customer/months belong to the subscription metrics spine.
+- Validate aggregated counts against contributing resolved canonical usage, without multiplying counts through joins or creating zeros for missing records.
+- Fail `dbt build` on integrity, uniqueness, or aggregation violations. Unresolved attribution alone does not fail the build.
 
 #### `intermediate.int_customer_monthly_cloud_costs`
 
-dbt **table**, rebuilt each run from `intermediate.int_customer_subscription_metrics` and `canonical.fct_workspace_cloud_costs`. One resolved row per customer/month in the subscription metrics spine, plus unallocated totals grouped by reason/month. (`customer_id`, `reporting_month`) is the logical key for resolved rows; (`resolution_status`, `reporting_month`) identifies unresolved rows.
+dbt **table**, rebuilt each run from `canonical.fct_workspace_cloud_costs`, using the customer/month spine from `intermediate.int_customer_subscription_metrics`. One row per customer and reporting month; (`customer_id`, `reporting_month`) is the logical primary key.
 
 ```sql
 CREATE TABLE intermediate.int_customer_monthly_cloud_costs (
@@ -754,25 +691,24 @@ CREATE TABLE intermediate.int_customer_monthly_cloud_costs (
 
 **Transformation rules**
 
-- Reuse the customer/month spine from `intermediate.int_customer_subscription_metrics`. Produce one `resolved` row for each customer/month in that spine.
-- Aggregate selected canonical charges by resolved `customer_id` and `usage_month` before joining to the spine. Sum `compute_cost_usd + storage_cost_usd`.
-- Use `NULL` when a customer/month has no matching cost records; do not infer zero from missing records. Sum all valid, selected, distinct charges as observed costs. Zero requires confirmed zero costs.
-- Group unallocated charges by (`resolution_status`, `usage_month`), with null `customer_id`. Preserve `missing_workspace`, `unknown_workspace`, and `unresolved_customer` totals, including cost-only months outside the customer/month spine.
-- Do not allocate unresolved charges to customers or include superseded or canonical-quarantined records in financial totals.
+- Include only canonical charges with `resolution_status = 'resolved'`. Aggregate by `customer_id` and `usage_month` before left joining to the customer/month spine; set `resolution_status` to `resolved`.
+- Sum `compute_cost_usd + storage_cost_usd` into `cloud_cost_usd`. Include every valid attributed charge, including multiple charges for the same workspace-month, without deduplicating by workspace and month. Preserve exact two-decimal precision.
+- Preserve observed zero costs. When no matching cost records exist, retain `NULL`; do not generate synthetic zero-cost rows. Observed totals do not establish complete workspace coverage; downstream completeness and publication safeguards still apply.
+- Exclude `unresolved_customer`, `unknown_workspace`, and `missing_workspace` charges from customer totals. Preserve them in the canonical fact for `published.monthly_data_quality_exceptions`; do not assign unallocated costs to placeholder customers.
 
 **dbt tests and validations**
 
-- `not_null`: `resolution_status`, `reporting_month`; `unique`: (`customer_id`, `reporting_month`) for resolved rows and (`resolution_status`, `reporting_month`) for unresolved rows.
-- `relationships`: nonnull `customer_id` references `canonical.dim_customer`. Accepted statuses: `resolved`, `missing_workspace`, `unknown_workspace`, `unresolved_customer`. Only resolved rows have nonnull customer IDs; unresolved rows require a nonnull cost amount.
-- Check nonnegative nonnull costs and first-of-month reporting dates. Verify exactly one resolved row for every customer/month in the subscription metrics spine.
-- Reconcile resolved and unresolved cost totals against selected canonical charges by month, without multiplying amounts through joins. Validate that missing costs remain `NULL`, not automatically zero.
-- Fail `dbt build` on integrity, uniqueness, coverage, or reconciliation violations. Unresolved attribution or expected canonical quarantine alone does not fail the build.
+- `not_null`: `customer_id`, `resolution_status`, `reporting_month`; `unique`: (`customer_id`, `reporting_month`).
+- `relationships`: `customer_id` references `canonical.dim_customer`; `accepted_values` for `resolution_status`: `resolved`.
+- Check nonnegative nonnull costs, exact two-decimal precision, and first-of-month reporting dates. Verify customer/month coverage matches the subscription metrics spine.
+- Validate totals against contributing resolved canonical charges without multiplying amounts through joins. Verify missing costs remain `NULL`.
+- Fail `dbt build` on integrity, uniqueness, precision, or aggregation violations. Unresolved attribution alone does not fail the build.
 
 ### 3.5 Published Customer Reporting View
 
 #### `published.customer_monthly_metrics`
 
-dbt **table**, rebuilt each run; one row per resolved customer per eligible reporting month within the source-derived cutoff.
+dbt **table**, rebuilt each run; one row per resolved customer per eligible reporting month. Analysts can query the published metrics directly without additional joins or handling unresolved records.
 
 ```sql
 CREATE TABLE published.customer_monthly_metrics (
@@ -790,33 +726,25 @@ CREATE TABLE published.customer_monthly_metrics (
 
 **Transformation rules**
 
-- Start from the customer/month spine in `intermediate.int_customer_subscription_metrics`.
-- Join `canonical.dim_customer` for customer names and the three intermediate metric tables by customer ID and reporting month. Use only resolved customer rows.
-- Include all eligible historical months in the customer/month spine, not just the latest month.
-- Validate that every known workspace mapped to the customer and active during the reporting month has at least one valid, selected record for both usage and cloud costs. A workspace is active when created on/before month-end and not deleted before month-start.
-- Check workspace-level canonical records for coverage. Do not assume intermediate zero usage or nonnull aggregated cloud costs prove workspace-level coverage. Refer to Section 1 for metric limitations. Account for quarantined workspaces when assessing affected customer-months; do not treat their omission as confirmed coverage or infer trusted ownership or lifecycle values.
-- Require reliable subscription metrics and resolved attribution. Exclude canonical-quarantined records from metrics; use their available customer/workspace and period references to identify affected customer-months and prevent incomplete totals from being published.
-- Exclude only affected customer-months when coverage or attribution is incomplete. Unaffected customer-months remain publishable.
-- Omitted customer-months are unreportable, not zero. Withholding the entire row may withhold otherwise valid metrics; this is intentional because dependent metrics such as gross margin require reliable revenue and cost inputs. Exclusion reasons remain in `published.monthly_data_quality_exceptions`.
-- Preserve confirmed zero values. Never replace missing or unknown metrics with zero.
-- Calculate `gross_margin` as `(monthly_subscription_revenue_usd - cloud_cost_usd) / monthly_subscription_revenue_usd * 100`, rounded to four decimal places. Return null when revenue is zero or required inputs are unknown.
-- Do not include unresolved customer or workspace buckets in this table.
+- Start from `intermediate.int_customer_subscription_metrics`. Left join `intermediate.int_customer_monthly_usage` and `intermediate.int_customer_monthly_cloud_costs` by customer ID and reporting month, and left join `canonical.dim_customer` by customer ID for customer names. Include all eligible historical customer-months.
+- Preserve month-end annualized subscription value, prorated service-period estimated monthly revenue, observed usage, and attributed cloud costs from the intermediate models, with existing monetary precision.
+- Require at least one valid usage and cloud-cost record for every known workspace mapped to the customer and active during the reporting month. A workspace is active when created on/before month-end and not deleted before month-start. Check canonical workspace-level records; aggregate totals alone do not establish coverage. Refer to Section 1 for metric limitations.
+- Exclude customer-months with missing required usage or cloud-cost records, unresolved customer attribution affecting their reliability, or unreliable subscription metrics. Record specific reasons in `published.monthly_data_quality_exceptions`; unrelated attribution issues must not block valid customer-months.
+- Omitted customer-months are unreportable, not zero. Withholding the entire row may withhold otherwise valid metrics; this is intentional because dependent metrics such as gross margin require reliable revenue and cost inputs.
+- Gross margin dollars equal estimated monthly revenue minus cloud cost. Calculate the published `gross_margin` percentage as `(monthly_subscription_revenue_usd - cloud_cost_usd) / monthly_subscription_revenue_usd * 100`, rounded to four decimal places. Return null when revenue is zero or required inputs are unknown.
 - Exclude contact emails, account notes, workspace names, and other restricted PII.
 
 **dbt tests and validations**
 
-- `not_null`: `customer_id`, `reporting_month`.
-- `unique`: (`customer_id`, `reporting_month`).
+- `not_null`: `customer_id`, `reporting_month`; `unique`: (`customer_id`, `reporting_month`).
 - `relationships`: `customer_id` references `canonical.dim_customer`.
-- Validate reporting months against the customer/month spine, customer names, metric calculations, workspace-month usage/cost coverage, and gross-margin calculations.
-- Verify published customer-months agree with the resolved intermediate aggregates.
-- Verify incomplete customer-months, including those potentially affected by quarantined workspace conflicts, are excluded and have corresponding data-quality exceptions.
-- Confirm joins do not duplicate customer-months or multiply amounts.
-- Confirm restricted PII is absent.
+- Verify customer names and metric values against the contributing intermediate models, including monetary precision and gross-margin calculations.
+- Verify no ineligible customer-months are published and excluded customer-months have corresponding specific exceptions.
+- Confirm joins do not duplicate customer-months or multiply amounts, and restricted PII is absent.
 
 #### `published.monthly_data_quality_exceptions`
 
-dbt **table**, rebuilt each run; exceptions for both published and unpublished customer-months.
+dbt **table**, rebuilt each run; the single analyst-facing table explaining excluded source records and customer-months, including exceptions for both published and unpublished customer-months.
 
 ```sql
 CREATE TABLE published.monthly_data_quality_exceptions (
@@ -835,27 +763,19 @@ CREATE TABLE published.monthly_data_quality_exceptions (
 
 **Transformation rules**
 
-- Record missing usage or cloud-cost coverage for active customer workspaces, including affected customer-months.
-- Use `issue_category = 'completeness'` with `issue_reason = 'missing_usage'` or `'missing_cloud_cost'`.
-- Record unresolved attribution using `issue_category = 'mapping'` with specific reasons: `unresolved_customer`, `unknown_workspace`, or `missing_workspace`.
-- Include unattributed usage and unallocated cloud costs without assigning them to customers.
-- Include quarantined staging and canonical records with `issue_category = 'quarantine'` and their actual rejection reasons, including `missing_selection_timestamp`, `conflicting_latest_records`, and `conflicting_workspace_records`. Preserve each source-row exclusion without treating conflicting candidates as additive business totals.
-- Preserve available source identifiers, workspace IDs, customer IDs, and reporting months.
-- Missing-record exceptions have null `source_row_id`.
-- When an invalid source date prevents determining the reporting month, retain null.
-- Preserve known excluded financial amounts and usage counts. Leave unknown or inapplicable values null; never invent zeros.
-- Retain exceptions for both published and unpublished customer-months.
-- Use the documented staging/canonical quarantine outputs and this single published exceptions table.
+- Generate source-record `mapping` exceptions from canonical attribution outcomes: `unresolved_customer`, `unknown_workspace`, or `missing_workspace`. Preserve unresolved usage and unallocated cloud costs without assigning them to unrelated customers.
+- Generate customer-month `completeness` exceptions from publication eligibility rules, including `missing_usage`, `missing_cloud_cost`, and existing specific reasons for unreliable subscription metrics.
+- Preserve available source table, customer/workspace identifiers, reporting month, and `source_row_id`. Missing-record exceptions have null `source_row_id`; retain null reporting months when the affected month cannot be determined.
+- Preserve applicable `excluded_financial_amount_usd`, `excluded_active_users`, and `excluded_api_calls`. Leave unknown or inapplicable values null; never invent zeros.
 
 **dbt tests and validations**
 
-- `not_null`: `source_table`, `issue_category`, `issue_reason`.
-- Accepted issue categories: `completeness`, `mapping`, `quarantine`.
-- Validate issue reasons against their corresponding categories.
-- Verify source-row lineage when `source_row_id` is available, including complete coverage of canonical-quarantined source records and their specific reasons.
-- Confirm missing-record exceptions do not invent source-row IDs or missing amounts.
-- Verify excluded customer-months have corresponding specific exceptions.
-- Reconcile unresolved usage and cloud costs against canonical and intermediate records.
+- `not_null`: `source_table`, `issue_category`, `issue_reason`; accepted `issue_category` values: `mapping`, `completeness`.
+- Validate issue reasons against their corresponding categories and publication eligibility rules.
+- Check first-of-month dates when `reporting_month` is nonnull and nonnegative excluded amounts and usage counts when available.
+- Verify source-row traceability against the contributing canonical record when `source_row_id` is available. Missing-record exceptions must not invent source-row IDs or missing amounts.
+- Verify excluded customer-months have specific completeness exceptions and mapping exceptions agree with canonical attribution outcomes.
+- Reconcile unresolved usage and cloud costs against canonical records; the supplied April dataset’s $773.00 unallocated cost is a verification reference, not hardcoded transformation logic.
 - Confirm restricted PII is absent.
 
 ## 4. Future Considerations
@@ -865,3 +785,56 @@ CREATE TABLE published.monthly_data_quality_exceptions (
 - **Historical corrections:** Define whether late-arriving data and source corrections should restate previously published months or whether finalized reporting periods should be frozen, with a controlled adjustment process.
 - **GAAP compliance:** Work with Finance to validate revenue recognition, cost allocation, and gross-margin definitions before treating contractual estimates as accounting-compliant financial metrics.
 - **dbt Semantic Layer:** Define governed metrics centrally using dbt's semantic modeling capabilities, enabling BI tools and other consumers to query consistent business metrics without writing SQL.
+
+## 5. Out of Scope Requirements
+
+The initial implementation uses dbt validation rather than dedicated audit and quarantine workflows. Invalid source records and duplicate normalized business keys fail validation instead of being quarantined.
+
+The following capabilities are deferred:
+
+- **Staging:** Dedicated quarantine tables, rejected-record recovery, and row-level disposition tracking across accounts, contracts, workspaces, usage, and cloud costs.
+- **Canonical:** Dedicated audit and quarantine tables, timestamp-based duplicate selection, superseded-record tracking, and historical workspace-mapping audits.
+- **Pipeline verification:** Exhaustive source-row accounting and lineage reconciliation across raw, staging, audit, quarantine, and canonical layers.
+- **Published exceptions:** Quarantine-related issue categories, rejection reasons, and publication of quarantined records.
+
+Unresolved customer mappings, unattributed usage, unallocated cloud costs, and missing data coverage remain in scope and are reported through `published.monthly_data_quality_exceptions`.
+
+## 6. Implementation Pull Requests
+
+### PR 1 — Canonical Models
+
+Implement the raw, staging, and canonical dbt models described in Section 3.
+
+**Deliverables:**
+
+- dbt source definitions with table and column documentation for all five raw sources.
+- Staging models for accounts, contracts, workspaces, usage, and cloud costs, with dbt table and column documentation.
+- Canonical customer, workspace, mapping, contract, usage, and cloud-cost models, with dbt table and column documentation.
+- dbt tests for required fields, normalized identifier uniqueness, valid dates and values, and referential consistency.
+
+**Acceptance criteria:**
+
+- `make build` successfully loads the supplied data and builds the implemented models.
+- Invalid source records and duplicate normalized business keys fail validation.
+- Valid records with unresolved customer attribution are preserved for downstream exception reporting.
+- Repeated builds produce consistent results.
+
+### PR 2 — Business Queries
+
+Implement the intermediate and published dbt models described in Section 3.
+
+**Deliverables:**
+
+- Intermediate customer-month subscription, usage, and cloud-cost metrics, with dbt table and column documentation.
+- `published.customer_monthly_metrics` with subscription value, usage, cloud cost, and gross-margin metrics, with dbt table and column documentation.
+- `published.monthly_data_quality_exceptions` with mapping and completeness exceptions, with dbt table and column documentation.
+- Customer-month eligibility rules that exclude incomplete or unreliable metrics without affecting valid customer-months.
+- dbt tests for aggregation accuracy, required fields, financial calculations, and publication eligibility.
+- Example SQL queries, documentation, and `make queries` support.
+
+**Acceptance criteria:**
+
+- Analysts can query customer-month metrics without additional joins or cleaning logic.
+- Unresolved attribution and excluded customer-months are visible in the exceptions table.
+- Published financial and usage metrics reconcile with eligible intermediate records.
+- `make build` and `make queries` complete successfully.
