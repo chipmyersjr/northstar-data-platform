@@ -78,3 +78,78 @@ models:
         description: >-
           Workspace deletion date; empty values become null. Invalid nonempty
           values fail validation, as do deletion dates before creation dates.
+
+  - name: stg_contracts
+    description: >-
+      One row per raw.contracts_batch1 source record, fully rebuilt each run.
+      Identifiers and billing values are normalized without filtering records.
+      Invalid required data, financial values, service dates, and duplicate normalized
+      contract IDs fail dbt tests. Missing or unknown account references remain
+      available for downstream resolution.
+    columns:
+      - name: source_row_id
+        data_type: BIGINT
+        description: >-
+          DuckDB internal rowid of the original raw.contracts_batch1 record. Provides
+          traceability within the supplied database but may change if raw is recreated.
+        data_tests:
+          - not_null
+          - unique
+      - name: contract_id
+        data_type: VARCHAR
+        description: Contract ID, trimmed and uppercased; empty values become null.
+        data_tests:
+          - not_null
+          - unique
+      - name: account_id
+        data_type: VARCHAR
+        description: >-
+          CRM account reference, trimmed and uppercased; empty values become null.
+          Missing or unmatched references remain valid unresolved attribution.
+      - name: plan
+        data_type: VARCHAR
+        description: Subscription plan, trimmed; empty values become null.
+        data_tests:
+          - not_null
+      - name: billing_period
+        data_type: VARCHAR
+        description: Billing period, trimmed and lowercased; empty values become null.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['annual', 'monthly']
+      - name: recurring_amount_usd
+        data_type: DECIMAL(18,2)
+        description: >-
+          Recurring USD amount per billing period, parsed to two decimal places.
+          Invalid or empty values become null; amounts must be nonnegative.
+        data_tests:
+          - not_null
+      - name: starts_on
+        data_type: DATE
+        description: Inclusive service start date; invalid or empty values become null.
+        data_tests:
+          - not_null
+      - name: ends_on
+        data_type: DATE
+        description: >-
+          Inclusive service end date; empty values become null. Invalid nonempty
+          values fail validation. Active contracts may have no end date; cancelled
+          contracts require an end date on or after the start date.
+      - name: status
+        data_type: VARCHAR
+        description: Contract status, trimmed and lowercased; empty values become null.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['active', 'cancelled']
+      - name: source_batch
+        data_type: VARCHAR
+        description: Original source extract identifier, preserved unchanged.
+      - name: extracted_at
+        data_type: TIMESTAMP WITH TIME ZONE
+        description: >-
+          Extract timestamp parsed with timezone information; invalid or empty values
+          become null. This field is optional.
