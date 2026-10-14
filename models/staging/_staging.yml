@@ -1,0 +1,42 @@
+version: 2
+
+models:
+  - name: stg_accounts
+    description: >-
+      One row per raw.accounts source record, fully rebuilt each run.
+      Identifiers and attributes are normalized without filtering records.
+      Invalid required fields and duplicate normalized account IDs fail dbt tests.
+      Contact emails and account notes are excluded from this analyst-accessible model.
+    columns:
+      - name: source_row_id
+        data_type: BIGINT
+        description: >-
+          DuckDB internal rowid of the original raw.accounts record. Provides
+          traceability within the supplied database but may change if raw is recreated.
+        data_tests:
+          - not_null
+          - unique
+      - name: account_id
+        data_type: VARCHAR
+        description: CRM account ID, trimmed and uppercased; empty values become null.
+        data_tests:
+          - not_null
+          - unique
+      - name: account_name
+        data_type: VARCHAR
+        description: Customer name, trimmed; empty values become null.
+        data_tests:
+          - not_null
+      - name: segment
+        data_type: VARCHAR
+        description: Customer segment, trimmed; empty values become null.
+      - name: region
+        data_type: VARCHAR
+        description: Customer region, trimmed and uppercased; empty values become null.
+      - name: updated_at
+        data_type: TIMESTAMP WITH TIME ZONE
+        description: >-
+          Account last-update timestamp, parsed with timezone information.
+          Invalid or empty values become null; this is not a creation timestamp.
+        data_tests:
+          - not_null
