@@ -27,7 +27,7 @@ CREATE TABLE published.customer_monthly_metrics (
 | `customer_id` | Customer ID from the normalized `accounts.account_id`. |
 | `customer_name` | Customer name from `accounts.account_name`. |
 | `reporting_month` | First day of the reporting month. Together with `customer_id`, uniquely identifies each row. |
-| `annualized_subscription_value_usd` | Sum of annualized values of all distinct contracts active at month-end, including overlapping contracts. Monthly amounts are multiplied by 12; annual amounts are used as-is. Contracts that ended before month-end or start afterward are excluded. |
+| `annualized_subscription_value_usd` | Sum of annualized values of all distinct contracts active at month-end, including overlapping contracts. Monthly amounts are multiplied by 12; annual amounts are used as-is. Contracts that ended before month-end or start afterward are excluded. This is a point-in-time measure, not a calculation based on historical monthly revenue. |
 | `monthly_subscription_revenue_usd` | Sum of each distinct contract's estimated revenue for its active service days during the month, including overlapping contracts. |
 | `product_usage_active_users` | Sum of observed active-user counts across the customer's workspaces for the month. Users active in multiple workspaces may be counted more than once. |
 | `product_usage_api_calls` | Total observed API calls across the customer's workspaces for the month. |
