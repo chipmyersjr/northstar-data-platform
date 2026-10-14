@@ -40,3 +40,41 @@ models:
           Invalid or empty values become null; this is not a creation timestamp.
         data_tests:
           - not_null
+
+  - name: stg_workspaces
+    description: >-
+      One row per raw.workspaces source record, fully rebuilt each run.
+      Workspace and customer references are normalized without filtering records.
+      Invalid required fields, invalid lifecycle dates, and duplicate normalized
+      workspace IDs fail dbt tests. Missing or unknown customer references remain
+      available for downstream resolution. Workspace names are excluded.
+    columns:
+      - name: source_row_id
+        data_type: BIGINT
+        description: >-
+          DuckDB internal rowid of the original raw.workspaces record. Provides
+          traceability within the supplied database but may change if raw is recreated.
+        data_tests:
+          - not_null
+          - unique
+      - name: workspace_id
+        data_type: VARCHAR
+        description: Workspace ID, trimmed and uppercased; empty values become null.
+        data_tests:
+          - not_null
+          - unique
+      - name: crm_account_ref
+        data_type: VARCHAR
+        description: >-
+          CRM customer reference, trimmed and uppercased; empty values become null.
+          Missing or unmatched references remain valid unresolved attribution.
+      - name: created_at
+        data_type: DATE
+        description: Workspace creation date; invalid or empty values become null.
+        data_tests:
+          - not_null
+      - name: deleted_at
+        data_type: DATE
+        description: >-
+          Workspace deletion date; empty values become null. Invalid nonempty
+          values fail validation, as do deletion dates before creation dates.
