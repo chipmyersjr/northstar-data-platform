@@ -97,12 +97,12 @@ CREATE TABLE published.monthly_data_quality_exceptions (
 
 ### 2.4 Data-Quality Verification and Reconciliation
 
-- Run dbt tests for uniqueness, non-null fields, relationships, accepted values, and essential business rules. Verify metric calculations, the source-derived reporting cutoff, valid usage and cloud-cost records for each active workspace and month, and absence of restricted PII.
+- Run dbt tests for uniqueness, non-null fields, relationships, accepted values, and essential business rules. Verify metric calculations, the source-derived reporting cutoff, valid usage and cloud-cost records for each active workspace and month, and that restricted PII columns are absent from downstream schemas.
 - Reconcile observed usage and cloud-cost totals between canonical records and resolved/unresolved intermediate aggregates. Verify published values against eligible customer-month metrics without double-counting.
 
 ### 2.5 Publication Safeguards
 
-- Fail `dbt build` when required-field, normalized business-key uniqueness, relationship, essential business-rule, metric-calculation, or PII-protection tests fail. Treat published tables as current only after a successful build; failed builds may leave stale or partially rebuilt tables available.
+- Fail `dbt build` when required-field, normalized business-key uniqueness, relationship, essential business-rule, metric-calculation tests fail, or restricted PII columns are present in downstream schemas. Treat published tables as current only after a successful build; failed builds may leave stale or partially rebuilt tables available.
 - Expected unresolved customer/workspace attribution remains visible through explicit resolution statuses and published exceptions without automatically failing the build.
 - Exclude customer-months with incomplete usage or cloud-cost data, unresolved customer attribution, or unreliable subscription metrics. Record the specific reasons in `published.monthly_data_quality_exceptions` without affecting valid customer-months.
 
@@ -454,7 +454,7 @@ CREATE TABLE canonical.dim_customer (
 - Staging enforces normalized `account_id` uniqueness and required-field validity.
 - `not_null`: `customer_id`, `customer_name`, `source_row_id`; `unique`: `customer_id` and `source_row_id`.
 - `relationships`: `source_row_id` references `staging.stg_accounts`. Custom lineage check: staging `account_id` equals canonical `customer_id`.
-- Verify restricted PII is excluded. Fail `dbt build` on required-field, uniqueness, lineage, or PII-protection violations. Dependent models selected in the same build are skipped when upstream tests fail. Previously built published tables may remain available but may be stale.
+- Verify that restricted PII columns are absent from downstream schemas. Fail `dbt build` on required-field, uniqueness, or lineage violations, or when restricted PII columns are present in downstream schemas. Dependent models selected in the same build are skipped when upstream tests fail. Previously built published tables may remain available but may be stale.
 
 #### `canonical.dim_workspaces`
 
@@ -481,7 +481,7 @@ CREATE TABLE canonical.dim_workspaces (
 - `not_null`: `workspace_id`, `created_at`, `source_row_id`; `unique`: `workspace_id` and `source_row_id`.
 - `relationships`: `source_row_id` references `staging.stg_workspaces`. Custom lineage check: the staging row has the same workspace ID, creation date, and deletion date as the canonical row.
 - Check that `deleted_at` is null or on/after `created_at`.
-- Fail `dbt build` on required-field, uniqueness, lineage, lifecycle, or PII-protection violations. Missing or unknown customer references do not fail validation solely because attribution is unresolved. Dependent models selected in the same build are skipped when upstream tests fail. Previously built published tables may remain available but may be stale.
+- Fail `dbt build` on required-field, uniqueness, lineage, or lifecycle violations, or when restricted PII columns are present in downstream schemas. Missing or unknown customer references do not fail validation solely because attribution is unresolved. Dependent models selected in the same build are skipped when upstream tests fail. Previously built published tables may remain available but may be stale.
 
 
 #### `canonical.map_customer_workspaces`
@@ -740,7 +740,7 @@ CREATE TABLE published.customer_monthly_metrics (
 - `relationships`: `customer_id` references `canonical.dim_customer`.
 - Verify customer names and metric values against the contributing intermediate models, including monetary precision and gross-margin calculations.
 - Verify no ineligible customer-months are published and excluded customer-months have corresponding specific exceptions.
-- Confirm joins do not duplicate customer-months or multiply amounts, and restricted PII is absent.
+- Confirm joins do not duplicate customer-months or multiply amounts, and restricted PII columns are absent from downstream schemas.
 
 #### `published.monthly_data_quality_exceptions`
 
@@ -776,7 +776,7 @@ CREATE TABLE published.monthly_data_quality_exceptions (
 - Verify source-row traceability against the contributing canonical record when `source_row_id` is available. Missing-record exceptions must not invent source-row IDs or missing amounts.
 - Verify excluded customer-months have specific completeness exceptions and mapping exceptions agree with canonical attribution outcomes.
 - Reconcile unresolved usage and cloud costs against canonical records; the supplied April dataset’s $773.00 unallocated cost is a verification reference, not hardcoded transformation logic.
-- Confirm restricted PII is absent.
+- Confirm restricted PII columns are absent from downstream schemas.
 
 ## 4. Future Considerations
 
