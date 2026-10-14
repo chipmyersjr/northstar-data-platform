@@ -32,9 +32,6 @@ make test     # run tests without rebuilding models
 make verify   # restore, build, and test from a clean warehouse
 ```
 
-The example model only proves that the supplied environment works. Replace or
-remove it as you build the requested staging and canonical layers.
-
 Every raw value is stored as text, and the tables include the batch metadata
 needed to reason about lineage. You may export tables from DuckDB if files are
 more convenient for inspection. Ingestion code is not part of the exercise.
