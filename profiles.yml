@@ -1,0 +1,10 @@
+# This credential-free DuckDB profile is tracked for reproducible local setup.
+# Production profiles typically remain untracked because they can contain secrets
+# and machine-specific settings. Do not add credentials to this file.
+northstar_analytics:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: warehouse.duckdb
+      threads: 4

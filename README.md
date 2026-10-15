@@ -14,6 +14,11 @@ data in its `raw` schema. Keep the original source database unchanged.
 
 ## Setup and run
 
+The credential-free DuckDB `profiles.yml` is intentionally committed so a fresh
+checkout uses the same local database configuration without manual profile setup.
+In a typical production project, `profiles.yml` would remain untracked because it
+can contain secrets and machine-specific settings.
+
 From the repository root, after placing the source database at the path above:
 
 ```sh
