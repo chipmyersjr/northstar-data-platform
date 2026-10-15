@@ -1,0 +1,41 @@
+version: 2
+
+models:
+  - name: dim_customer
+    description: >-
+      One row per validated customer from stg_accounts, fully rebuilt each run.
+      Each staging account maps directly to a customer, retaining its attributes
+      and source-row reference. Contact emails and account notes are excluded.
+    columns:
+      - name: customer_id
+        data_type: VARCHAR
+        description: Normalized staging account_id, renamed as the customer primary key.
+        data_tests:
+          - not_null
+          - unique
+      - name: customer_name
+        data_type: VARCHAR
+        description: Staging account_name, renamed as the customer name.
+        data_tests:
+          - not_null
+      - name: segment
+        data_type: VARCHAR
+        description: Customer segment preserved from staging.
+      - name: region
+        data_type: VARCHAR
+        description: Normalized customer region preserved from staging.
+      - name: updated_at
+        data_type: TIMESTAMP WITH TIME ZONE
+        description: Account last-update timestamp preserved from staging, not a creation date.
+      - name: source_row_id
+        data_type: BIGINT
+        description: >-
+          Source-row reference preserved from stg_accounts, derived from the supplied
+          raw table's DuckDB rowid. It may change if the raw table is recreated.
+        data_tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments:
+                to: ref('stg_accounts')
+                field: source_row_id
