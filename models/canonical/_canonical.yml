@@ -111,3 +111,86 @@ models:
           - accepted_values:
               arguments:
                 values: ['resolved', 'unresolved_customer']
+
+  - name: fct_contracts
+    description: >-
+      One row per validated staging contract, fully rebuilt each run. Cancelled,
+      ended, future, and unresolved contracts are preserved. Customer attribution
+      uses the staging account reference; missing or unmatched references remain
+      unresolved. Amounts and inclusive service dates are preserved without
+      calculating annualized value or subscription revenue.
+    columns:
+      - name: contract_id
+        data_type: VARCHAR
+        description: Normalized contract ID preserved from staging; the contract primary key.
+        data_tests:
+          - not_null
+          - unique
+      - name: customer_id
+        data_type: VARCHAR
+        description: Canonical customer matching the staging account reference; null if unresolved.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_id
+      - name: resolution_status
+        data_type: VARCHAR
+        description: resolved when a customer matches; otherwise unresolved_customer with null customer_id.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['resolved', 'unresolved_customer']
+      - name: plan
+        data_type: VARCHAR
+        description: Subscription plan preserved from staging.
+      - name: billing_period
+        data_type: VARCHAR
+        description: Normalized annual or monthly billing period preserved from staging.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['annual', 'monthly']
+      - name: recurring_amount_usd
+        data_type: DECIMAL(18,2)
+        description: Exact recurring USD amount per billing period, preserved from staging; nonnegative.
+        data_tests:
+          - not_null
+      - name: starts_on
+        data_type: DATE
+        description: Inclusive contract service start date preserved from staging.
+        data_tests:
+          - not_null
+      - name: ends_on
+        data_type: DATE
+        description: >-
+          Inclusive service end date preserved from staging. Must be on or after
+          starts_on when present; required for cancelled contracts.
+      - name: status
+        data_type: VARCHAR
+        description: Normalized active or cancelled contract status preserved from staging.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['active', 'cancelled']
+      - name: source_batch
+        data_type: VARCHAR
+        description: Source extract identifier preserved unchanged from staging.
+      - name: extracted_at
+        data_type: TIMESTAMP WITH TIME ZONE
+        description: Optional extraction timestamp preserved from staging.
+      - name: source_row_id
+        data_type: BIGINT
+        description: >-
+          Source-row reference preserved from stg_contracts, derived from the supplied
+          raw table's DuckDB rowid. It may change if the raw table is recreated.
+        data_tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments:
+                to: ref('stg_contracts')
+                field: source_row_id
