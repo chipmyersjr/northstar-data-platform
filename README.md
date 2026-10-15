@@ -37,6 +37,11 @@ make test     # run tests without rebuilding models
 make verify   # restore, build, and test from a clean warehouse
 ```
 
+## Troubleshooting
+
+DuckDB database locks can occur when another application or process has an active
+connection to `warehouse.duckdb`. Close those connections and retry the command.
+
 Every raw value is stored as text, and the tables include the batch metadata
 needed to reason about lineage. You may export tables from DuckDB if files are
 more convenient for inspection. Ingestion code is not part of the exercise.
