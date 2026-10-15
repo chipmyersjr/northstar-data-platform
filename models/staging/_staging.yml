@@ -214,3 +214,62 @@ models:
         description: >-
           Extract timestamp parsed with timezone information; invalid or empty values
           become null. This field is optional.
+
+  - name: stg_cloud_costs
+    description: >-
+      One row per raw.cloud_costs source record, fully rebuilt each run without
+      filtering, aggregation, or deduplication. Multiple charges per workspace-month
+      are retained. Invalid required data, negative costs, and amounts with extra
+      nonzero decimal places fail validation. Missing or unknown workspace references
+      and their unallocated costs remain available for downstream resolution.
+    columns:
+      - name: source_row_id
+        data_type: BIGINT
+        description: >-
+          DuckDB internal rowid of the original raw.cloud_costs record. Provides
+          traceability within the supplied database but may change if raw is recreated.
+        data_tests:
+          - not_null
+          - unique
+      - name: cost_id
+        data_type: VARCHAR
+        description: Cost record ID, trimmed and uppercased; empty values become null.
+        data_tests:
+          - not_null
+          - unique
+      - name: workspace_id
+        data_type: VARCHAR
+        description: >-
+          Workspace reference, trimmed and uppercased; empty values become null.
+          Missing or unknown references remain valid unresolved attribution.
+      - name: usage_month
+        data_type: DATE
+        description: >-
+          Month costs were incurred, parsed as a date and normalized to its first day.
+          Invalid or empty values become null and fail validation.
+        data_tests:
+          - not_null
+      - name: compute_cost_usd
+        data_type: DECIMAL(18,2)
+        description: >-
+          Compute cost in USD, parsed to two decimal places. Invalid or empty values
+          become null and fail validation. Negative amounts and extra nonzero decimal
+          places fail validation; trailing zeros are permitted.
+        data_tests:
+          - not_null
+      - name: storage_cost_usd
+        data_type: DECIMAL(18,2)
+        description: >-
+          Storage cost in USD, parsed to two decimal places. Invalid or empty values
+          become null and fail validation. Negative amounts and extra nonzero decimal
+          places fail validation; trailing zeros are permitted.
+        data_tests:
+          - not_null
+      - name: source_batch
+        data_type: VARCHAR
+        description: Original source extract identifier, preserved unchanged.
+      - name: extracted_at
+        data_type: TIMESTAMP WITH TIME ZONE
+        description: >-
+          Extract timestamp parsed with timezone information; missing or blank values
+          become null. Malformed nonempty values fail raw validation.
