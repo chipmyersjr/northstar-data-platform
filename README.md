@@ -14,6 +14,11 @@ data in its `raw` schema. Keep the original source database unchanged.
 
 ## Setup and run
 
+The credential-free DuckDB `profiles.yml` is intentionally committed so a fresh
+checkout uses the same local database configuration without manual profile setup.
+In a typical production project, `profiles.yml` would remain untracked because it
+can contain secrets and machine-specific settings.
+
 From the repository root, after placing the source database at the path above:
 
 ```sh
@@ -32,8 +37,10 @@ make test     # run tests without rebuilding models
 make verify   # restore, build, and test from a clean warehouse
 ```
 
-The example model only proves that the supplied environment works. Replace or
-remove it as you build the requested staging and canonical layers.
+## Troubleshooting
+
+DuckDB database locks can occur when another application or process has an active
+connection to `warehouse.duckdb`. Close those connections and retry the command.
 
 Every raw value is stored as text, and the tables include the batch metadata
 needed to reason about lineage. You may export tables from DuckDB if files are

@@ -1,17 +1,149 @@
 version: 2
-
 sources:
-  - name: northstar_raw
-    schema: raw
-    description: Preloaded synthetic exports. All source columns are strings.
-    tables:
-      - name: accounts
-        description: CRM account export containing structured and free-text PII.
-      - name: contracts_batch1
-        description: Initial subscription contract extract.
-      - name: workspaces
-        description: Application workspaces and their CRM account references.
-      - name: usage_batch1
-        description: Initial monthly workspace usage extract.
-      - name: cloud_costs
-        description: Workspace-level and unallocated cloud costs.
+- name: northstar_raw
+  schema: raw
+  description: Preloaded synthetic exports. All source columns are strings.
+  tables:
+  - name: accounts
+    description: 'CRM customer export. Grain: one raw account source record. Contact emails and account
+      notes are sensitive and must remain in access-restricted raw storage.'
+    columns:
+    - name: account_id
+      data_type: VARCHAR
+      data_tests:
+        - not_null
+      description: CRM account identifier, preserved with its original formatting.
+    - name: account_name
+      data_type: VARCHAR
+      data_tests:
+        - not_null
+      description: Customer name as supplied by the CRM.
+    - name: segment
+      data_type: VARCHAR
+      description: Customer segment, such as Enterprise, Midmarket, or SMB.
+    - name: region
+      data_type: VARCHAR
+      description: Customer region, such as NA, EU, or APAC.
+    - name: primary_contact_email
+      data_type: VARCHAR
+      description: Sensitive primary contact email; excluded from analyst-accessible models.
+    - name: account_notes
+      data_type: VARCHAR
+      description: Sensitive free-text account notes that may contain PII; excluded from analyst-accessible models.
+    - name: updated_at
+      data_type: VARCHAR
+      data_tests:
+        - not_null
+      description: Account last-update timestamp stored as text, not its creation date.
+  - name: contracts_batch1
+    description: 'Initial subscription contract extract. Grain: one raw contract source record identified
+      by contract_id.'
+    columns:
+    - name: contract_id
+      data_type: VARCHAR
+      description: Subscription contract identifier, preserved with its original formatting.
+    - name: account_id
+      data_type: VARCHAR
+      description: CRM account reference associated with the contract.
+    - name: plan
+      data_type: VARCHAR
+      description: Subscription plan name.
+    - name: billing_period
+      data_type: VARCHAR
+      description: Recurring billing period, such as annual or monthly.
+    - name: recurring_amount_usd
+      data_type: VARCHAR
+      description: Recurring amount in USD per billing period, stored as text.
+    - name: starts_on
+      data_type: VARCHAR
+      description: Inclusive contract service start date stored as text.
+    - name: ends_on
+      data_type: VARCHAR
+      description: Inclusive contract service end date stored as text; missing values indicate no recorded
+        end date.
+    - name: status
+      data_type: VARCHAR
+      description: Contract status, such as active or cancelled.
+    - name: source_batch
+      data_type: VARCHAR
+      description: Identifier of the source extract.
+    - name: extracted_at
+      data_type: VARCHAR
+      description: Timestamp when the extract was produced, stored as text with timezone information.
+  - name: workspaces
+    description: 'Product workspace export with CRM account references. Grain: one raw workspace source
+      record. Workspace names are sensitive and must remain in access-restricted raw storage.'
+    columns:
+    - name: workspace_id
+      data_type: VARCHAR
+      data_tests:
+        - not_null
+      description: Product workspace identifier, preserved with its original formatting.
+    - name: workspace_name
+      data_type: VARCHAR
+      description: Sensitive free-text workspace name that may contain PII; excluded from analyst-accessible models.
+    - name: crm_account_ref
+      data_type: VARCHAR
+      description: CRM account reference; may have case or whitespace differences, be missing, or reference
+        an unknown account.
+    - name: created_at
+      data_type: VARCHAR
+      data_tests:
+        - not_null
+      description: Workspace creation date stored as text.
+    - name: deleted_at
+      data_type: VARCHAR
+      description: Workspace deletion date stored as text; a missing value means no deletion is recorded.
+  - name: usage_batch1
+    description: 'Initial monthly workspace usage extract. Grain: one raw workspace-month usage source
+      record identified by usage_id. Active-user counts may include the same person in multiple workspaces.'
+    columns:
+    - name: usage_id
+      data_type: VARCHAR
+      description: Usage record identifier, preserved with its original formatting.
+    - name: workspace_id
+      data_type: VARCHAR
+      description: Workspace reference associated with the usage.
+    - name: usage_month
+      data_type: VARCHAR
+      description: Reporting month represented by its first day, stored as text.
+    - name: active_users
+      data_type: VARCHAR
+      description: Workspace active-user count for the month, stored as text.
+    - name: api_calls
+      data_type: VARCHAR
+      description: Workspace API-call count for the month, stored as text.
+    - name: source_batch
+      data_type: VARCHAR
+      description: Identifier of the source extract.
+    - name: extracted_at
+      data_type: VARCHAR
+      description: Timestamp when the extract was produced, stored as text with timezone information.
+  - name: cloud_costs
+    description: 'Monthly cloud-cost extract containing workspace and unallocated charges. Grain: one
+      raw charge source record identified by cost_id; multiple distinct charges may belong to the same
+      workspace-month.'
+    columns:
+    - name: cost_id
+      data_type: VARCHAR
+      description: Cloud-cost record identifier, preserved with its original formatting.
+    - name: workspace_id
+      data_type: VARCHAR
+      description: Workspace reference associated with the cost; may be missing or reference an unknown
+        workspace.
+    - name: usage_month
+      data_type: VARCHAR
+      description: Month when costs were incurred, represented by its first day and stored as text; not
+        the extraction month.
+    - name: compute_cost_usd
+      data_type: VARCHAR
+      description: Compute cost in USD, stored as text.
+    - name: storage_cost_usd
+      data_type: VARCHAR
+      description: Storage cost in USD, stored as text.
+    - name: source_batch
+      data_type: VARCHAR
+      description: Identifier of the source extract.
+    - name: extracted_at
+      data_type: VARCHAR
+      description: Timestamp when the extract was produced, stored as text with timezone information.
