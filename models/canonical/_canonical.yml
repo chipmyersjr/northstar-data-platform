@@ -74,3 +74,40 @@ models:
               arguments:
                 to: ref('stg_workspaces')
                 field: source_row_id
+
+  - name: map_customer_workspaces
+    description: >-
+      One row per canonical workspace, fully rebuilt each run. Normalized staging
+      customer references are matched to dim_customer without dropping workspaces
+      with missing or unknown references. Workspace names, emails, and notes are excluded.
+    columns:
+      - name: workspace_id
+        data_type: VARCHAR
+        description: Canonical workspace ID; the mapping primary key.
+        data_tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments:
+                to: ref('dim_workspaces')
+                field: workspace_id
+      - name: customer_id
+        data_type: VARCHAR
+        description: >-
+          Canonical customer matching the workspace's normalized staging crm_account_ref.
+          Null when the reference is missing or unmatched.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_id
+      - name: resolution_status
+        data_type: VARCHAR
+        description: >-
+          resolved when customer_id matches a canonical customer; otherwise
+          unresolved_customer, with a null customer_id.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['resolved', 'unresolved_customer']
