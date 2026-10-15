@@ -194,3 +194,72 @@ models:
               arguments:
                 to: ref('stg_contracts')
                 field: source_row_id
+
+  - name: fct_workspace_usage
+    description: >-
+      One row per validated staging workspace-month usage record, fully rebuilt
+      each run. All usage records are retained without aggregation, including
+      missing or unknown workspace references and historical usage for deleted
+      workspaces. Attribution uses the current workspace mapping; unresolved usage
+      is preserved for downstream exceptions, not assigned to customer totals.
+    columns:
+      - name: usage_id
+        data_type: VARCHAR
+        description: Normalized usage record ID preserved from staging.
+        data_tests:
+          - not_null
+          - unique
+      - name: workspace_id
+        data_type: VARCHAR
+        description: Normalized workspace reference preserved from staging; may be null or unknown.
+      - name: customer_id
+        data_type: VARCHAR
+        description: Current mapped customer ID for resolved usage; null for all unresolved outcomes.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_id
+      - name: resolution_status
+        data_type: VARCHAR
+        description: >-
+          resolved for a mapped customer, unresolved_customer for an ownerless mapped
+          workspace, unknown_workspace for an unmatched ID, or missing_workspace for a null ID.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['resolved', 'unresolved_customer', 'unknown_workspace', 'missing_workspace']
+      - name: usage_month
+        data_type: DATE
+        description: First day of the usage reporting month, preserved from staging.
+        data_tests:
+          - not_null
+      - name: active_users
+        data_type: BIGINT
+        description: Nonnegative workspace active-user count preserved from staging, without aggregation.
+        data_tests:
+          - not_null
+      - name: api_calls
+        data_type: BIGINT
+        description: Nonnegative workspace API-call count preserved from staging, without aggregation.
+        data_tests:
+          - not_null
+      - name: source_batch
+        data_type: VARCHAR
+        description: Source extract identifier preserved unchanged from staging.
+      - name: extracted_at
+        data_type: TIMESTAMP WITH TIME ZONE
+        description: Optional extraction timestamp preserved from staging.
+      - name: source_row_id
+        data_type: BIGINT
+        description: >-
+          Source-row reference preserved from stg_usage, derived from the supplied
+          raw table's DuckDB rowid. It may change if the raw table is recreated.
+        data_tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments:
+                to: ref('stg_usage')
+                field: source_row_id
