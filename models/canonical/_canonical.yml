@@ -39,3 +39,38 @@ models:
               arguments:
                 to: ref('stg_accounts')
                 field: source_row_id
+
+  - name: dim_workspaces
+    description: >-
+      One row per validated workspace from stg_workspaces, fully rebuilt each run.
+      All workspaces are retained, including those with missing or unknown customer
+      references. Customer references remain in staging; workspace names are excluded.
+    columns:
+      - name: workspace_id
+        data_type: VARCHAR
+        description: Normalized workspace ID preserved from staging; the workspace primary key.
+        data_tests:
+          - not_null
+          - unique
+      - name: created_at
+        data_type: DATE
+        description: Workspace creation date preserved from staging.
+        data_tests:
+          - not_null
+      - name: deleted_at
+        data_type: DATE
+        description: >-
+          Workspace deletion date preserved from staging. Null means no deletion is
+          recorded; a nonnull date must be on or after the creation date.
+      - name: source_row_id
+        data_type: BIGINT
+        description: >-
+          Source-row reference preserved from stg_workspaces, derived from the supplied
+          raw table's DuckDB rowid. It may change if the raw table is recreated.
+        data_tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments:
+                to: ref('stg_workspaces')
+                field: source_row_id
