@@ -1,0 +1,63 @@
+version: 2
+
+models:
+  - name: int_customer_month_spine
+    description: >-
+      Shared helper view defining customer reporting months for subscription, usage,
+      and cloud-cost models. Starts at the earliest resolved contract or mapped workspace
+      creation and ends at the latest shared usage/cost month; this does not establish
+      workspace-level coverage. Intermediate objects are for internal transformation
+      use, not analyst access. Analyst-facing data comes from the published layer.
+    columns:
+      - name: customer_id
+        description: Canonical customer ID; forms the reporting key with reporting_month.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_id
+      - name: reporting_month
+        description: First day of the reporting month, through the source-derived cutoff.
+        data_tests:
+          - not_null
+
+unit_tests:
+  # Customer reporting months
+  - name: customer_months_follow_start_dates_and_shared_cutoff
+    description: >-
+      Customers start reporting in different months based on their first contract
+      or workspace. Reporting continues after a contract ends and stops at the
+      latest month present in both usage and cost data.
+    model: int_customer_month_spine
+    given:
+      - input: ref('dim_customer')
+        rows:
+          - {customer_id: C1}
+          - {customer_id: C2}
+      - input: ref('fct_contracts')
+        rows:
+          - {customer_id: C1, resolution_status: resolved, starts_on: '2026-02-15', ends_on: '2026-02-28', status: cancelled}
+      - input: ref('dim_workspaces')
+        rows:
+          - {workspace_id: W1, created_at: '2026-03-31'}
+          - {workspace_id: W2, created_at: '2026-03-01'}
+      - input: ref('map_customer_workspaces')
+        rows:
+          - {workspace_id: W1, customer_id: C1, resolution_status: resolved}
+          - {workspace_id: W2, customer_id: C2, resolution_status: resolved}
+      - input: ref('stg_usage')
+        rows:
+          - {workspace_id: W1, usage_month: '2026-04-01'}
+          - {workspace_id: W1, usage_month: '2026-05-01'}
+      - input: ref('stg_cloud_costs')
+        rows:
+          - {workspace_id: W2, usage_month: '2026-04-01'}
+          - {workspace_id: W2, usage_month: '2026-06-01'}
+    expect:
+      rows:
+        - {customer_id: C1, reporting_month: '2026-02-01'}
+        - {customer_id: C1, reporting_month: '2026-03-01'}
+        - {customer_id: C1, reporting_month: '2026-04-01'}
+        - {customer_id: C2, reporting_month: '2026-03-01'}
+        - {customer_id: C2, reporting_month: '2026-04-01'}
