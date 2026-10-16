@@ -22,6 +22,45 @@ models:
         data_tests:
           - not_null
 
+  - name: int_customer_monthly_usage
+    description: >-
+      Observed resolved usage summed by customer and reporting month within the
+      shared reporting window. Missing usage produces no row; observed zeros remain
+      zero. Active users are workspace counts, not distinct people across workspaces.
+    columns:
+      - name: customer_id
+        data_type: VARCHAR
+        description: Resolved canonical customer ID; forms the key with reporting_month.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_id
+      - name: resolution_status
+        data_type: VARCHAR
+        description: Always resolved; unresolved records are excluded from customer totals.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['resolved']
+      - name: reporting_month
+        data_type: DATE
+        description: First day of the usage month, restricted to the shared customer-month spine.
+        data_tests:
+          - not_null
+      - name: product_usage_active_users
+        data_type: BIGINT
+        description: Sum of observed workspace active-user counts; people may overlap across workspaces.
+        data_tests:
+          - not_null
+      - name: product_usage_api_calls
+        data_type: BIGINT
+        description: Sum of observed API-call counts across the customer's workspaces for the month.
+        data_tests:
+          - not_null
+
 unit_tests:
   # Customer reporting months
   - name: customer_months_follow_start_dates_and_shared_cutoff
@@ -61,3 +100,27 @@ unit_tests:
         - {customer_id: C1, reporting_month: '2026-04-01'}
         - {customer_id: C2, reporting_month: '2026-03-01'}
         - {customer_id: C2, reporting_month: '2026-04-01'}
+
+  # Monthly customer usage
+  - name: customer_usage_adds_workspaces_and_skips_missing_months
+    description: >-
+      Adds usage across a customer's workspaces, excludes unresolved usage, keeps
+      observed zeros, and omits months without usage or outside the reporting window.
+    model: int_customer_monthly_usage
+    given:
+      - input: ref('fct_workspace_usage')
+        rows:
+          - {customer_id: C1, workspace_id: W1, resolution_status: resolved, usage_month: '2026-04-01', active_users: 3, api_calls: 100}
+          - {customer_id: C1, workspace_id: W2, resolution_status: resolved, usage_month: '2026-04-01', active_users: 4, api_calls: 250}
+          - {customer_id: C2, workspace_id: W3, resolution_status: resolved, usage_month: '2026-04-01', active_users: 0, api_calls: 0}
+          - {customer_id: C1, workspace_id: W1, resolution_status: resolved, usage_month: '2026-05-01', active_users: 99, api_calls: 999}
+          - {customer_id: null, workspace_id: W4, resolution_status: unresolved_customer, usage_month: '2026-04-01', active_users: 5, api_calls: 500}
+      - input: ref('int_customer_month_spine')
+        rows:
+          - {customer_id: C1, reporting_month: '2026-04-01'}
+          - {customer_id: C2, reporting_month: '2026-04-01'}
+          - {customer_id: C3, reporting_month: '2026-04-01'}
+    expect:
+      rows:
+        - {customer_id: C1, resolution_status: resolved, reporting_month: '2026-04-01', product_usage_active_users: 7, product_usage_api_calls: 350}
+        - {customer_id: C2, resolution_status: resolved, reporting_month: '2026-04-01', product_usage_active_users: 0, product_usage_api_calls: 0}
