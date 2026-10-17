@@ -61,6 +61,41 @@ models:
         data_tests:
           - not_null
 
+  - name: int_customer_monthly_cloud_costs
+    description: >-
+      Observed resolved charges summed by customer and reporting month. Retains
+      every customer-month in the shared reporting window, with NULL for missing
+      costs and zero for observed zero-dollar charges. Multiple charges are additive.
+    columns:
+      - name: customer_id
+        data_type: VARCHAR
+        description: Canonical customer ID; forms the key with reporting_month.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_id
+      - name: resolution_status
+        data_type: VARCHAR
+        description: Always resolved for customer-month rows; does not indicate cost coverage.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['resolved']
+      - name: reporting_month
+        data_type: DATE
+        description: First day of the reporting month from the shared customer-month spine.
+        data_tests:
+          - not_null
+      - name: cloud_cost_usd
+        data_type: DECIMAL(18,2)
+        description: >-
+          Sum of observed compute and storage costs from all resolved charges for
+          the customer-month. NULL when no matching records exist; zero only when
+          matching charges sum to zero. Observed totals do not prove complete billing.
+
 unit_tests:
   # Customer reporting months
   - name: customer_months_follow_start_dates_and_shared_cutoff
@@ -124,3 +159,27 @@ unit_tests:
       rows:
         - {customer_id: C1, resolution_status: resolved, reporting_month: '2026-04-01', product_usage_active_users: 7, product_usage_api_calls: 350}
         - {customer_id: C2, resolution_status: resolved, reporting_month: '2026-04-01', product_usage_active_users: 0, product_usage_api_calls: 0}
+
+  # Monthly customer cloud costs
+  - name: customer_costs_add_charges_and_distinguish_missing_from_zero
+    description: >-
+      Adds separate charges for the same workspace-month, excludes unresolved costs,
+      and keeps every reporting month with NULL for missing costs and zero for observed zero costs.
+    model: int_customer_monthly_cloud_costs
+    given:
+      - input: ref('fct_workspace_cloud_costs')
+        rows:
+          - {cost_id: K1, customer_id: C1, workspace_id: W1, resolution_status: resolved, usage_month: '2026-04-01', compute_cost_usd: 10.10, storage_cost_usd: 2.20}
+          - {cost_id: K2, customer_id: C1, workspace_id: W1, resolution_status: resolved, usage_month: '2026-04-01', compute_cost_usd: 3.00, storage_cost_usd: 0.40}
+          - {cost_id: K3, customer_id: C2, workspace_id: W2, resolution_status: resolved, usage_month: '2026-04-01', compute_cost_usd: 0, storage_cost_usd: 0}
+          - {cost_id: K4, customer_id: null, workspace_id: W3, resolution_status: unresolved_customer, usage_month: '2026-04-01', compute_cost_usd: 100, storage_cost_usd: 1}
+      - input: ref('int_customer_month_spine')
+        rows:
+          - {customer_id: C1, reporting_month: '2026-04-01'}
+          - {customer_id: C2, reporting_month: '2026-04-01'}
+          - {customer_id: C3, reporting_month: '2026-04-01'}
+    expect:
+      rows:
+        - {customer_id: C1, resolution_status: resolved, reporting_month: '2026-04-01', cloud_cost_usd: 15.70}
+        - {customer_id: C2, resolution_status: resolved, reporting_month: '2026-04-01', cloud_cost_usd: 0}
+        - {customer_id: C3, resolution_status: resolved, reporting_month: '2026-04-01', cloud_cost_usd: null}
