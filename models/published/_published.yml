@@ -99,6 +99,9 @@ models:
         data_type: BIGINT
         description: Observed API calls for an unresolved usage record; otherwise NULL.
 
+# Unit tests validate transformation logic involving joins, aggregations, and
+# calculations using controlled inputs and expected outputs. Simpler models
+# rely on data tests to validate their contracts and data integrity.
 unit_tests:
   - name: customer_months_require_all_workspace_observations
     description: Publishes complete coverage and observed zeros with NULL margin for zero revenue. Excludes partial multi-workspace coverage and customer-months without

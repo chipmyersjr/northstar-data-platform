@@ -176,6 +176,9 @@ models:
         data_tests:
           - not_null
 
+# Unit tests validate transformation logic involving joins, aggregations, and
+# calculations using controlled inputs and expected outputs. Simpler models
+# rely on data tests to validate their contracts and data integrity.
 unit_tests:
   # Customer reporting months
   - name: customer_months_follow_start_dates_and_shared_cutoff
