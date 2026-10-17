@@ -1,0 +1,94 @@
+version: 2
+
+models:
+  - name: customer_monthly_metrics
+    description: Customer-month metrics rebuilt each run for customers with at least one active resolved workspace and observed usage and costs for every active workspace.
+      Missing metrics exclude the entire row; observed zeros remain valid. Usage and costs are observed values, not independently verified complete totals. Revenue
+      is an estimate and gross margin is not a GAAP measure. Omitted months are unreportable, not zero.
+    columns:
+      - name: customer_id
+        data_type: VARCHAR
+        description: Resolved canonical customer ID; forms the key with reporting_month.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_id
+      - name: customer_name
+        data_type: VARCHAR
+        description: Customer name from the canonical customer dimension.
+      - name: reporting_month
+        data_type: DATE
+        description: First day of the eligible reporting month, including historical months.
+        data_tests:
+          - not_null
+      - name: annualized_subscription_value_usd
+        data_type: DECIMAL(18,2)
+        description: Month-end annualized contract value in USD from subscription metrics; do not sum across months.
+      - name: monthly_subscription_revenue_usd
+        data_type: DECIMAL(18,2)
+        description: Estimated service-day-prorated revenue in USD from subscription metrics, not recognized accounting revenue.
+      - name: product_usage_active_users
+        data_type: BIGINT
+        description: Observed active users summed across workspaces; a person may be counted more than once.
+      - name: product_usage_api_calls
+        data_type: BIGINT
+        description: Observed API calls summed across the customer's workspaces for the month.
+      - name: cloud_cost_usd
+        data_type: DECIMAL(18,2)
+        description: Observed attributed compute and storage costs in USD from the intermediate model.
+      - name: gross_margin
+        data_type: DECIMAL(18,4)
+        description: Estimated revenue less observed cloud costs, divided by revenue and multiplied by 100. Rounded to four decimal places; NULL for zero revenue.
+          Do not sum or directly average percentages.
+
+unit_tests:
+  - name: customer_months_require_all_workspace_observations
+    description: Publishes complete coverage and observed zeros with NULL margin for zero revenue. Excludes partial multi-workspace coverage and customer-months without
+      active workspaces, even when intermediate totals exist.
+    model: customer_monthly_metrics
+    given:
+      - input: ref('int_customer_subscription_metrics')
+        rows:
+          - {customer_id: C1, reporting_month: '2026-04-01', annualized_subscription_value_usd: 1200, monthly_subscription_revenue_usd: 100}
+          - {customer_id: C2, reporting_month: '2026-04-01', annualized_subscription_value_usd: 1200, monthly_subscription_revenue_usd: 100}
+          - {customer_id: C3, reporting_month: '2026-04-01', annualized_subscription_value_usd: 1200, monthly_subscription_revenue_usd: 100}
+          - {customer_id: C4, reporting_month: '2026-04-01', annualized_subscription_value_usd: 0, monthly_subscription_revenue_usd: 0}
+          - {customer_id: C5, reporting_month: '2026-04-01', annualized_subscription_value_usd: 1200, monthly_subscription_revenue_usd: 100}
+      - input: ref('int_customer_monthly_usage')
+        rows:
+          - {customer_id: C1, product_usage_active_users: 7, product_usage_api_calls: 70, reporting_month: '2026-04-01'}
+          - {customer_id: C2, product_usage_active_users: 7, product_usage_api_calls: 70, reporting_month: '2026-04-01'}
+          - {customer_id: C3, product_usage_active_users: 7, product_usage_api_calls: 70, reporting_month: '2026-04-01'}
+          - {customer_id: C4, product_usage_active_users: 0, product_usage_api_calls: 0, reporting_month: '2026-04-01'}
+          - {customer_id: C5, product_usage_active_users: 7, product_usage_api_calls: 70, reporting_month: '2026-04-01'}
+      - input: ref('int_customer_monthly_cloud_costs')
+        rows:
+          - {customer_id: C1, cloud_cost_usd: 20, reporting_month: '2026-04-01'}
+          - {customer_id: C2, cloud_cost_usd: 20, reporting_month: '2026-04-01'}
+          - {customer_id: C3, cloud_cost_usd: 20, reporting_month: '2026-04-01'}
+          - {customer_id: C4, cloud_cost_usd: 0, reporting_month: '2026-04-01'}
+          - {customer_id: C5, cloud_cost_usd: 20, reporting_month: '2026-04-01'}
+      - input: ref('dim_customer')
+        rows:
+          - {customer_id: C1, customer_name: Customer 1}
+          - {customer_id: C2, customer_name: Customer 2}
+          - {customer_id: C3, customer_name: Customer 3}
+          - {customer_id: C4, customer_name: Customer 4}
+          - {customer_id: C5, customer_name: Customer 5}
+      - input: ref('int_workspace_month_coverage')
+        rows:
+          - {customer_id: C1, reporting_month: '2026-04-01', workspace_id: W1, has_usage: true, has_cost: true}
+          - {customer_id: C1, reporting_month: '2026-04-01', workspace_id: W2, has_usage: true, has_cost: true}
+          - {customer_id: C2, reporting_month: '2026-04-01', workspace_id: W3, has_usage: true, has_cost: true}
+          - {customer_id: C2, reporting_month: '2026-04-01', workspace_id: W4, has_usage: false, has_cost: true}
+          - {customer_id: C3, reporting_month: '2026-04-01', workspace_id: W5, has_usage: true, has_cost: true}
+          - {customer_id: C3, reporting_month: '2026-04-01', workspace_id: W6, has_usage: true, has_cost: false}
+          - {customer_id: C4, reporting_month: '2026-04-01', workspace_id: W7, has_usage: true, has_cost: true}
+    expect:
+      rows:
+        - {customer_id: C1, customer_name: Customer 1, reporting_month: '2026-04-01', annualized_subscription_value_usd: 1200, monthly_subscription_revenue_usd: 100,
+          product_usage_active_users: 7, product_usage_api_calls: 70, cloud_cost_usd: 20, gross_margin: 80}
+        - {customer_id: C4, customer_name: Customer 4, reporting_month: '2026-04-01', annualized_subscription_value_usd: 0, monthly_subscription_revenue_usd: 0, product_usage_active_users: 0,
+          product_usage_api_calls: 0, cloud_cost_usd: 0, gross_margin: null}
