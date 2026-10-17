@@ -1,0 +1,275 @@
+version: 2
+
+models:
+  - name: stg_accounts
+    description: >-
+      One row per raw.accounts source record, fully rebuilt each run.
+      Identifiers and attributes are normalized without filtering records.
+      Invalid required fields and duplicate normalized account IDs fail dbt tests.
+      Contact emails and account notes are excluded from this analyst-accessible model.
+    columns:
+      - name: source_row_id
+        data_type: BIGINT
+        description: >-
+          DuckDB internal rowid of the original raw.accounts record. Provides
+          traceability within the supplied database but may change if raw is recreated.
+        data_tests:
+          - not_null
+          - unique
+      - name: account_id
+        data_type: VARCHAR
+        description: CRM account ID, trimmed and uppercased; empty values become null.
+        data_tests:
+          - not_null
+          - unique
+      - name: account_name
+        data_type: VARCHAR
+        description: Customer name, trimmed; empty values become null.
+        data_tests:
+          - not_null
+      - name: segment
+        data_type: VARCHAR
+        description: Customer segment, trimmed; empty values become null.
+      - name: region
+        data_type: VARCHAR
+        description: Customer region, trimmed and uppercased; empty values become null.
+      - name: updated_at
+        data_type: TIMESTAMP WITH TIME ZONE
+        description: >-
+          Account last-update timestamp, parsed with timezone information.
+          Invalid or empty values become null; this is not a creation timestamp.
+        data_tests:
+          - not_null
+
+  - name: stg_workspaces
+    description: >-
+      One row per raw.workspaces source record, fully rebuilt each run.
+      Workspace and customer references are normalized without filtering records.
+      Invalid required fields, invalid lifecycle dates, and duplicate normalized
+      workspace IDs fail dbt tests. Missing or unknown customer references remain
+      available for downstream resolution. Workspace names are excluded.
+    columns:
+      - name: source_row_id
+        data_type: BIGINT
+        description: >-
+          DuckDB internal rowid of the original raw.workspaces record. Provides
+          traceability within the supplied database but may change if raw is recreated.
+        data_tests:
+          - not_null
+          - unique
+      - name: workspace_id
+        data_type: VARCHAR
+        description: Workspace ID, trimmed and uppercased; empty values become null.
+        data_tests:
+          - not_null
+          - unique
+      - name: crm_account_ref
+        data_type: VARCHAR
+        description: >-
+          CRM customer reference, trimmed and uppercased; empty values become null.
+          Missing or unmatched references remain valid unresolved attribution.
+      - name: created_at
+        data_type: DATE
+        description: Workspace creation date; invalid or empty values become null.
+        data_tests:
+          - not_null
+      - name: deleted_at
+        data_type: DATE
+        description: >-
+          Workspace deletion date; empty values become null. Invalid nonempty
+          values fail validation, as do deletion dates before creation dates.
+
+  - name: stg_contracts
+    description: >-
+      One row per raw.contracts_batch1 source record, fully rebuilt each run.
+      Identifiers and billing values are normalized without filtering records.
+      Invalid required data, financial values, service dates, and duplicate normalized
+      contract IDs fail dbt tests. Missing or unknown account references remain
+      available for downstream resolution.
+    columns:
+      - name: source_row_id
+        data_type: BIGINT
+        description: >-
+          DuckDB internal rowid of the original raw.contracts_batch1 record. Provides
+          traceability within the supplied database but may change if raw is recreated.
+        data_tests:
+          - not_null
+          - unique
+      - name: contract_id
+        data_type: VARCHAR
+        description: Contract ID, trimmed and uppercased; empty values become null.
+        data_tests:
+          - not_null
+          - unique
+      - name: account_id
+        data_type: VARCHAR
+        description: >-
+          CRM account reference, trimmed and uppercased; empty values become null.
+          Missing or unmatched references remain valid unresolved attribution.
+      - name: plan
+        data_type: VARCHAR
+        description: Subscription plan, trimmed; empty values become null.
+        data_tests:
+          - not_null
+      - name: billing_period
+        data_type: VARCHAR
+        description: Billing period, trimmed and lowercased; empty values become null.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['annual', 'monthly']
+      - name: recurring_amount_usd
+        data_type: DECIMAL(18,2)
+        description: >-
+          Recurring USD amount per billing period, parsed to two decimal places.
+          Invalid or empty values become null; amounts must be nonnegative.
+        data_tests:
+          - not_null
+      - name: starts_on
+        data_type: DATE
+        description: Inclusive service start date; invalid or empty values become null.
+        data_tests:
+          - not_null
+      - name: ends_on
+        data_type: DATE
+        description: >-
+          Inclusive service end date; empty values become null. Invalid nonempty
+          values fail validation. Active contracts may have no end date; cancelled
+          contracts require an end date on or after the start date.
+      - name: status
+        data_type: VARCHAR
+        description: Contract status, trimmed and lowercased; empty values become null.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['active', 'cancelled']
+      - name: source_batch
+        data_type: VARCHAR
+        description: Original source extract identifier, preserved unchanged.
+      - name: extracted_at
+        data_type: TIMESTAMP WITH TIME ZONE
+        description: >-
+          Extract timestamp parsed with timezone information; invalid or empty values
+          become null. This field is optional.
+
+  - name: stg_usage
+    description: >-
+      One row per raw.usage_batch1 source record, fully rebuilt each run.
+      Identifiers are normalized without filtering records. Invalid required data,
+      invalid counts, duplicate normalized usage IDs, and duplicate workspace-month
+      keys fail dbt tests. Missing or unknown workspace references remain available
+      for downstream resolution. Active users are workspace counts, not distinct
+      people across workspaces.
+    columns:
+      - name: source_row_id
+        data_type: BIGINT
+        description: >-
+          DuckDB internal rowid of the original raw.usage_batch1 record. Provides
+          traceability within the supplied database but may change if raw is recreated.
+        data_tests:
+          - not_null
+          - unique
+      - name: usage_id
+        data_type: VARCHAR
+        description: Usage record ID, trimmed and uppercased; empty values become null.
+        data_tests:
+          - not_null
+          - unique
+      - name: workspace_id
+        data_type: VARCHAR
+        description: >-
+          Workspace reference, trimmed and uppercased; empty values become null.
+          Missing or unknown references remain valid unresolved attribution.
+      - name: usage_month
+        data_type: DATE
+        description: >-
+          Usage reporting month, parsed as a date and normalized to the first day
+          of the month using date_trunc('month', ...).
+          Invalid or empty values become null and fail validation.
+        data_tests:
+          - not_null
+      - name: active_users
+        data_type: BIGINT
+        description: >-
+          Observed workspace active-user count for the month, parsed as a nonnegative
+          whole number. Fractional, invalid, negative, or out-of-range values become
+          null and fail validation rather than being rounded.
+        data_tests:
+          - not_null
+      - name: api_calls
+        data_type: BIGINT
+        description: >-
+          Observed workspace API-call count for the month, parsed as a nonnegative
+          whole number. Fractional, invalid, negative, or out-of-range values become
+          null and fail validation rather than being rounded.
+        data_tests:
+          - not_null
+      - name: source_batch
+        data_type: VARCHAR
+        description: Original source extract identifier, preserved unchanged.
+      - name: extracted_at
+        data_type: TIMESTAMP WITH TIME ZONE
+        description: >-
+          Extract timestamp parsed with timezone information; invalid or empty values
+          become null. This field is optional.
+
+  - name: stg_cloud_costs
+    description: >-
+      One row per raw.cloud_costs source record, fully rebuilt each run without
+      filtering, aggregation, or deduplication. Multiple charges per workspace-month
+      are retained. Invalid required data, negative costs, and amounts with extra
+      nonzero decimal places fail validation. Missing or unknown workspace references
+      and their unallocated costs remain available for downstream resolution.
+    columns:
+      - name: source_row_id
+        data_type: BIGINT
+        description: >-
+          DuckDB internal rowid of the original raw.cloud_costs record. Provides
+          traceability within the supplied database but may change if raw is recreated.
+        data_tests:
+          - not_null
+          - unique
+      - name: cost_id
+        data_type: VARCHAR
+        description: Cost record ID, trimmed and uppercased; empty values become null.
+        data_tests:
+          - not_null
+          - unique
+      - name: workspace_id
+        data_type: VARCHAR
+        description: >-
+          Workspace reference, trimmed and uppercased; empty values become null.
+          Missing or unknown references remain valid unresolved attribution.
+      - name: usage_month
+        data_type: DATE
+        description: >-
+          Month costs were incurred, parsed as a date and normalized to its first day.
+          Invalid or empty values become null and fail validation.
+        data_tests:
+          - not_null
+      - name: compute_cost_usd
+        data_type: DECIMAL(18,2)
+        description: >-
+          Compute cost in USD, parsed to two decimal places. Invalid or empty values
+          become null and fail validation. Negative amounts and extra nonzero decimal
+          places fail validation; trailing zeros are permitted.
+        data_tests:
+          - not_null
+      - name: storage_cost_usd
+        data_type: DECIMAL(18,2)
+        description: >-
+          Storage cost in USD, parsed to two decimal places. Invalid or empty values
+          become null and fail validation. Negative amounts and extra nonzero decimal
+          places fail validation; trailing zeros are permitted.
+        data_tests:
+          - not_null
+      - name: source_batch
+        data_type: VARCHAR
+        description: Original source extract identifier, preserved unchanged.
+      - name: extracted_at
+        data_type: TIMESTAMP WITH TIME ZONE
+        description: >-
+          Extract timestamp parsed with timezone information; missing or blank values
+          become null. Malformed nonempty values fail raw validation.

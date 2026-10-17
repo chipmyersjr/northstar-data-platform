@@ -1,0 +1,334 @@
+version: 2
+
+models:
+  - name: dim_customer
+    description: >-
+      One row per validated customer from stg_accounts, fully rebuilt each run.
+      Each staging account maps directly to a customer, retaining its attributes
+      and source-row reference. Contact emails and account notes are excluded.
+    columns:
+      - name: customer_id
+        data_type: VARCHAR
+        description: Normalized staging account_id, renamed as the customer primary key.
+        data_tests:
+          - not_null
+          - unique
+      - name: customer_name
+        data_type: VARCHAR
+        description: Staging account_name, renamed as the customer name.
+        data_tests:
+          - not_null
+      - name: segment
+        data_type: VARCHAR
+        description: Customer segment preserved from staging.
+      - name: region
+        data_type: VARCHAR
+        description: Normalized customer region preserved from staging.
+      - name: updated_at
+        data_type: TIMESTAMP WITH TIME ZONE
+        description: Account last-update timestamp preserved from staging, not a creation date.
+      - name: source_row_id
+        data_type: BIGINT
+        description: >-
+          Source-row reference preserved from stg_accounts, derived from the supplied
+          raw table's DuckDB rowid. It may change if the raw table is recreated.
+        data_tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments:
+                to: ref('stg_accounts')
+                field: source_row_id
+
+  - name: dim_workspaces
+    description: >-
+      One row per validated workspace from stg_workspaces, fully rebuilt each run.
+      All workspaces are retained, including those with missing or unknown customer
+      references. Customer references remain in staging; workspace names are excluded.
+    columns:
+      - name: workspace_id
+        data_type: VARCHAR
+        description: Normalized workspace ID preserved from staging; the workspace primary key.
+        data_tests:
+          - not_null
+          - unique
+      - name: created_at
+        data_type: DATE
+        description: Workspace creation date preserved from staging.
+        data_tests:
+          - not_null
+      - name: deleted_at
+        data_type: DATE
+        description: >-
+          Workspace deletion date preserved from staging. Null means no deletion is
+          recorded; a nonnull date must be on or after the creation date.
+      - name: source_row_id
+        data_type: BIGINT
+        description: >-
+          Source-row reference preserved from stg_workspaces, derived from the supplied
+          raw table's DuckDB rowid. It may change if the raw table is recreated.
+        data_tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments:
+                to: ref('stg_workspaces')
+                field: source_row_id
+
+  - name: map_customer_workspaces
+    description: >-
+      One row per canonical workspace, fully rebuilt each run. Normalized staging
+      customer references are matched to dim_customer without dropping workspaces
+      with missing or unknown references. Workspace names, emails, and notes are excluded.
+    columns:
+      - name: workspace_id
+        data_type: VARCHAR
+        description: Canonical workspace ID; the mapping primary key.
+        data_tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments:
+                to: ref('dim_workspaces')
+                field: workspace_id
+      - name: customer_id
+        data_type: VARCHAR
+        description: >-
+          Canonical customer matching the workspace's normalized staging crm_account_ref.
+          Null when the reference is missing or unmatched.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_id
+      - name: resolution_status
+        data_type: VARCHAR
+        description: >-
+          resolved when customer_id matches a canonical customer; otherwise
+          unresolved_customer, with a null customer_id.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['resolved', 'unresolved_customer']
+
+  - name: fct_contracts
+    description: >-
+      One row per validated staging contract, fully rebuilt each run. Cancelled,
+      ended, future, and unresolved contracts are preserved. Customer attribution
+      uses the staging account reference; missing or unmatched references remain
+      unresolved. Amounts and inclusive service dates are preserved without
+      calculating annualized value or subscription revenue.
+    columns:
+      - name: contract_id
+        data_type: VARCHAR
+        description: Normalized contract ID preserved from staging; the contract primary key.
+        data_tests:
+          - not_null
+          - unique
+      - name: customer_id
+        data_type: VARCHAR
+        description: Canonical customer matching the staging account reference; null if unresolved.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_id
+      - name: resolution_status
+        data_type: VARCHAR
+        description: resolved when a customer matches; otherwise unresolved_customer with null customer_id.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['resolved', 'unresolved_customer']
+      - name: plan
+        data_type: VARCHAR
+        description: Subscription plan preserved from staging.
+      - name: billing_period
+        data_type: VARCHAR
+        description: Normalized annual or monthly billing period preserved from staging.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['annual', 'monthly']
+      - name: recurring_amount_usd
+        data_type: DECIMAL(18,2)
+        description: Exact recurring USD amount per billing period, preserved from staging; nonnegative.
+        data_tests:
+          - not_null
+      - name: starts_on
+        data_type: DATE
+        description: Inclusive contract service start date preserved from staging.
+        data_tests:
+          - not_null
+      - name: ends_on
+        data_type: DATE
+        description: >-
+          Inclusive service end date preserved from staging. Must be on or after
+          starts_on when present; required for cancelled contracts.
+      - name: status
+        data_type: VARCHAR
+        description: Normalized active or cancelled contract status preserved from staging.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['active', 'cancelled']
+      - name: source_batch
+        data_type: VARCHAR
+        description: Source extract identifier preserved unchanged from staging.
+      - name: extracted_at
+        data_type: TIMESTAMP WITH TIME ZONE
+        description: Optional extraction timestamp preserved from staging.
+      - name: source_row_id
+        data_type: BIGINT
+        description: >-
+          Source-row reference preserved from stg_contracts, derived from the supplied
+          raw table's DuckDB rowid. It may change if the raw table is recreated.
+        data_tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments:
+                to: ref('stg_contracts')
+                field: source_row_id
+
+  - name: fct_workspace_usage
+    description: >-
+      One row per validated staging workspace-month usage record, fully rebuilt
+      each run. All usage records are retained without aggregation, including
+      missing or unknown workspace references and historical usage for deleted
+      workspaces. Attribution uses the current workspace mapping; unresolved usage
+      is preserved for downstream exceptions, not assigned to customer totals.
+    columns:
+      - name: usage_id
+        data_type: VARCHAR
+        description: Normalized usage record ID preserved from staging.
+        data_tests:
+          - not_null
+          - unique
+      - name: workspace_id
+        data_type: VARCHAR
+        description: Normalized workspace reference preserved from staging; may be null or unknown.
+      - name: customer_id
+        data_type: VARCHAR
+        description: Current mapped customer ID for resolved usage; null for all unresolved outcomes.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_id
+      - name: resolution_status
+        data_type: VARCHAR
+        description: >-
+          resolved for a mapped customer, unresolved_customer for an ownerless mapped
+          workspace, unknown_workspace for an unmatched ID, or missing_workspace for a null ID.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['resolved', 'unresolved_customer', 'unknown_workspace', 'missing_workspace']
+      - name: usage_month
+        data_type: DATE
+        description: First day of the usage reporting month, preserved from staging.
+        data_tests:
+          - not_null
+      - name: active_users
+        data_type: BIGINT
+        description: Nonnegative workspace active-user count preserved from staging, without aggregation.
+        data_tests:
+          - not_null
+      - name: api_calls
+        data_type: BIGINT
+        description: Nonnegative workspace API-call count preserved from staging, without aggregation.
+        data_tests:
+          - not_null
+      - name: source_batch
+        data_type: VARCHAR
+        description: Source extract identifier preserved unchanged from staging.
+      - name: extracted_at
+        data_type: TIMESTAMP WITH TIME ZONE
+        description: Optional extraction timestamp preserved from staging.
+      - name: source_row_id
+        data_type: BIGINT
+        description: >-
+          Source-row reference preserved from stg_usage, derived from the supplied
+          raw table's DuckDB rowid. It may change if the raw table is recreated.
+        data_tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments:
+                to: ref('stg_usage')
+                field: source_row_id
+
+  - name: fct_workspace_cloud_costs
+    description: >-
+      One row per validated staging cloud-cost record, fully rebuilt each run.
+      All charges are retained with exact amounts, including unresolved costs and
+      multiple charges for the same workspace-month. Attribution uses the current
+      workspace mapping, including for historical costs of deleted workspaces.
+      No aggregation, deduplication, or customer metric calculation is performed.
+    columns:
+      - name: cost_id
+        data_type: VARCHAR
+        description: Normalized cost record ID preserved from staging; the charge primary key.
+        data_tests:
+          - not_null
+          - unique
+      - name: workspace_id
+        data_type: VARCHAR
+        description: Normalized workspace reference preserved from staging; may be missing or unknown.
+      - name: customer_id
+        data_type: VARCHAR
+        description: Current mapped customer ID for resolved charges; null for all unresolved outcomes.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_id
+      - name: resolution_status
+        data_type: VARCHAR
+        description: >-
+          resolved for a mapped customer, unresolved_customer for an ownerless mapped
+          workspace, unknown_workspace for an unmatched ID, or missing_workspace for a null ID.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['resolved', 'unresolved_customer', 'unknown_workspace', 'missing_workspace']
+      - name: usage_month
+        data_type: DATE
+        description: First day of the month costs were incurred, preserved from staging.
+        data_tests:
+          - not_null
+      - name: compute_cost_usd
+        data_type: DECIMAL(18,2)
+        description: Exact nonnegative compute cost in USD, preserved from staging without rounding.
+        data_tests:
+          - not_null
+      - name: storage_cost_usd
+        data_type: DECIMAL(18,2)
+        description: Exact nonnegative storage cost in USD, preserved from staging without rounding.
+        data_tests:
+          - not_null
+      - name: source_batch
+        data_type: VARCHAR
+        description: Source extract identifier preserved unchanged from staging.
+      - name: extracted_at
+        data_type: TIMESTAMP WITH TIME ZONE
+        description: Optional extraction timestamp preserved from staging.
+      - name: source_row_id
+        data_type: BIGINT
+        description: >-
+          Source-row reference preserved from stg_cloud_costs, derived from the supplied
+          raw table's DuckDB rowid. It may change if the raw table is recreated.
+        data_tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments:
+                to: ref('stg_cloud_costs')
+                field: source_row_id
