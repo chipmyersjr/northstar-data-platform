@@ -43,6 +43,62 @@ models:
         description: Estimated revenue less observed cloud costs, divided by revenue and multiplied by 100. Rounded to four decimal places; NULL for zero revenue.
           Do not sum or directly average percentages.
 
+  - name: monthly_data_quality_exceptions
+    description: Explains missing active-workspace observations and unresolved usage/cost attribution. Grain is one row per workspace-month
+      and missing observation type, or one row per unresolved canonical source record. Includes reporting months outside published metrics.
+      Excluded amounts describe individual unresolved records, not totals withheld with an entire customer-month. Unresolved contracts
+      and customer-months with no active workspaces are not represented.
+    columns:
+      - name: reporting_month
+        data_type: DATE
+        description: Affected reporting month from coverage or the canonical source record.
+      - name: source_table
+        data_type: VARCHAR
+        description: Canonical fact containing the unresolved record or missing observation.
+        data_tests:
+          - not_null
+      - name: issue_category
+        data_type: VARCHAR
+        description: Mapping for unresolved attribution; completeness for missing observations.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - mapping
+                  - completeness
+      - name: issue_reason
+        data_type: VARCHAR
+        description: Canonical resolution status or the specific missing observation.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - unresolved_customer
+                  - unknown_workspace
+                  - missing_workspace
+                  - missing_usage
+                  - missing_cloud_cost
+      - name: workspace_id
+        data_type: VARCHAR
+        description: Available workspace identifier; NULL when missing from the source.
+      - name: customer_id
+        data_type: VARCHAR
+        description: Known customer for missing observations; NULL for unresolved attribution.
+      - name: source_row_id
+        data_type: BIGINT
+        description: Original source-row reference preserved in the canonical fact; NULL for missing observations.
+      - name: excluded_financial_amount_usd
+        data_type: DECIMAL(18,2)
+        description: Compute plus storage amounts for an unresolved cost record; otherwise NULL.
+      - name: excluded_active_users
+        data_type: BIGINT
+        description: Observed active-user count for an unresolved usage record; otherwise NULL.
+      - name: excluded_api_calls
+        data_type: BIGINT
+        description: Observed API calls for an unresolved usage record; otherwise NULL.
+
 unit_tests:
   - name: customer_months_require_all_workspace_observations
     description: Publishes complete coverage and observed zeros with NULL margin for zero revenue. Excludes partial multi-workspace coverage and customer-months without
@@ -92,3 +148,40 @@ unit_tests:
           product_usage_active_users: 7, product_usage_api_calls: 70, cloud_cost_usd: 20, gross_margin: 80}
         - {customer_id: C4, customer_name: Customer 4, reporting_month: '2026-04-01', annualized_subscription_value_usd: 0, monthly_subscription_revenue_usd: 0, product_usage_active_users: 0,
           product_usage_api_calls: 0, cloud_cost_usd: 0, gross_margin: null}
+
+  - name: exceptions_explain_missing_observations_and_unresolved_records
+    description: Reports missing usage and costs separately, skips observed zeros and resolved records, and preserves unresolved reasons, source rows, months, and excluded
+      metrics.
+    model: monthly_data_quality_exceptions
+    given:
+      - input: ref('int_workspace_month_coverage')
+        rows:
+          - {customer_id: C1, reporting_month: '2026-04-01', workspace_id: W1, has_usage: false, has_cost: false}
+          - {customer_id: C1, reporting_month: '2026-04-01', workspace_id: W2, has_usage: true, has_cost: false}
+          - {customer_id: C1, reporting_month: '2026-04-01', workspace_id: W3, has_usage: true, has_cost: true}
+      - input: ref('fct_workspace_usage')
+        rows:
+          - {customer_id: null, workspace_id: W7, usage_month: '2026-04-01', resolution_status: unresolved_customer, active_users: 2, api_calls: 20, source_row_id: 1}
+          - {customer_id: null, workspace_id: W999, usage_month: '2026-05-01', resolution_status: unknown_workspace, active_users: 3, api_calls: 30, source_row_id: 2}
+          - {customer_id: C1, workspace_id: W3, usage_month: '2026-04-01', resolution_status: resolved, active_users: 0, api_calls: 0, source_row_id: 3}
+      - input: ref('fct_workspace_cloud_costs')
+        rows:
+          - {customer_id: null, workspace_id: null, usage_month: '2026-04-01', resolution_status: missing_workspace, compute_cost_usd: 10, storage_cost_usd: 2, source_row_id: 4}
+          - {customer_id: null, workspace_id: W7, usage_month: '2026-04-01', resolution_status: unresolved_customer, compute_cost_usd: 3, storage_cost_usd: 1, source_row_id: 5}
+          - {customer_id: C1, workspace_id: W3, usage_month: '2026-04-01', resolution_status: resolved, compute_cost_usd: 0, storage_cost_usd: 0, source_row_id: 6}
+    expect:
+      rows:
+        - {reporting_month: '2026-04-01', source_table: canonical.fct_workspace_usage, issue_category: completeness, issue_reason: missing_usage, workspace_id: W1,
+          customer_id: C1, source_row_id: null, excluded_financial_amount_usd: null, excluded_active_users: null, excluded_api_calls: null}
+        - {reporting_month: '2026-04-01', source_table: canonical.fct_workspace_cloud_costs, issue_category: completeness, issue_reason: missing_cloud_cost, workspace_id: W1,
+          customer_id: C1, source_row_id: null, excluded_financial_amount_usd: null, excluded_active_users: null, excluded_api_calls: null}
+        - {reporting_month: '2026-04-01', source_table: canonical.fct_workspace_cloud_costs, issue_category: completeness, issue_reason: missing_cloud_cost, workspace_id: W2,
+          customer_id: C1, source_row_id: null, excluded_financial_amount_usd: null, excluded_active_users: null, excluded_api_calls: null}
+        - {reporting_month: '2026-04-01', source_table: canonical.fct_workspace_usage, issue_category: mapping, issue_reason: unresolved_customer, workspace_id: W7,
+          customer_id: null, source_row_id: 1, excluded_financial_amount_usd: null, excluded_active_users: 2, excluded_api_calls: 20}
+        - {reporting_month: '2026-05-01', source_table: canonical.fct_workspace_usage, issue_category: mapping, issue_reason: unknown_workspace, workspace_id: W999,
+          customer_id: null, source_row_id: 2, excluded_financial_amount_usd: null, excluded_active_users: 3, excluded_api_calls: 30}
+        - {reporting_month: '2026-04-01', source_table: canonical.fct_workspace_cloud_costs, issue_category: mapping, issue_reason: missing_workspace, workspace_id: null,
+          customer_id: null, source_row_id: 4, excluded_financial_amount_usd: 12, excluded_active_users: null, excluded_api_calls: null}
+        - {reporting_month: '2026-04-01', source_table: canonical.fct_workspace_cloud_costs, issue_category: mapping, issue_reason: unresolved_customer, workspace_id: W7,
+          customer_id: null, source_row_id: 5, excluded_financial_amount_usd: 4, excluded_active_users: null, excluded_api_calls: null}
