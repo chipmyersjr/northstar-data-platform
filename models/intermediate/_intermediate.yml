@@ -272,7 +272,7 @@ unit_tests:
     description: >-
       Annual and monthly contracts add together at month-end. Partial-month and ended
       contracts contribute revenue for their service days. Missing contracts produce
-      zeros, and unresolved contracts are excluded.
+      zeros, unresolved contracts are excluded, and half-cent revenue rounds up to cents.
     model: int_customer_subscription_metrics
     given:
       - input: ref('fct_contracts')
@@ -282,16 +282,19 @@ unit_tests:
           - {contract_id: K3, customer_id: C1, resolution_status: resolved, billing_period: monthly, recurring_amount_usd: 60, starts_on: '2026-04-16', ends_on: null, status: active}
           - {contract_id: K4, customer_id: C1, resolution_status: resolved, billing_period: annual, recurring_amount_usd: 1200, starts_on: '2026-04-01', ends_on: '2026-04-15', status: cancelled}
           - {contract_id: K5, customer_id: null, resolution_status: unresolved_customer, billing_period: monthly, recurring_amount_usd: 999, starts_on: '2026-04-01', ends_on: null, status: active}
+          - {contract_id: K6, customer_id: C3, resolution_status: resolved, billing_period: monthly, recurring_amount_usd: 14.98, starts_on: '2026-02-01', ends_on: '2026-02-01', status: cancelled}
       - input: ref('int_customer_month_spine')
         rows:
           - {customer_id: C1, reporting_month: '2026-03-01'}
           - {customer_id: C1, reporting_month: '2026-04-01'}
           - {customer_id: C2, reporting_month: '2026-04-01'}
+          - {customer_id: C3, reporting_month: '2026-02-01'}
     expect:
       rows:
         - {customer_id: C1, reporting_month: '2026-03-01', annualized_subscription_value_usd: 0, monthly_subscription_revenue_usd: 0}
         - {customer_id: C1, reporting_month: '2026-04-01', annualized_subscription_value_usd: 3120, monthly_subscription_revenue_usd: 280}
         - {customer_id: C2, reporting_month: '2026-04-01', annualized_subscription_value_usd: 0, monthly_subscription_revenue_usd: 0}
+        - {customer_id: C3, reporting_month: '2026-02-01', annualized_subscription_value_usd: 0, monthly_subscription_revenue_usd: 0.54}
 
   # Workspace-month observations
   - name: workspace_coverage_distinguishes_observations_from_missing_records

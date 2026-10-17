@@ -31,9 +31,9 @@ subscription_totals as (
                 then annualized_amount_usd
             else 0
         end) as decimal(18, 2)) as annualized_subscription_value_usd,
-        cast(round(sum(
+        cast(round(sum(cast(
             annualized_amount_usd / 12 * service_days / calendar_days
-        ), 2) as decimal(18, 2)) as monthly_subscription_revenue_usd
+        as decimal(38, 12))), 2) as decimal(18, 2)) as monthly_subscription_revenue_usd
     from contract_months
     group by customer_id, reporting_month
 )
