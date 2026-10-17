@@ -96,6 +96,45 @@ models:
           the customer-month. NULL when no matching records exist; zero only when
           matching charges sum to zero. Observed totals do not prove complete billing.
 
+  - name: int_customer_subscription_metrics
+    description: >-
+      Subscription value and estimated revenue for every customer-month in the shared
+      reporting window, fully rebuilt each run. Resolved overlapping contracts are
+      additive. Months with no eligible contracts have zero metrics; unresolved
+      contracts are not assigned to customers. Publication reliability is checked separately.
+    columns:
+      - name: customer_id
+        data_type: VARCHAR
+        description: Canonical customer ID; forms the key with reporting_month.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_id
+      - name: reporting_month
+        data_type: DATE
+        description: First day of the reporting month from the shared customer-month spine.
+        data_tests:
+          - not_null
+      - name: annualized_subscription_value_usd
+        data_type: DECIMAL(18,2)
+        description: >-
+          Month-end snapshot of contracts effective on the month's final day, using
+          inclusive service dates. Annual amounts are unchanged; monthly amounts
+          are multiplied by 12. Zero when no resolved contracts are eligible at month-end.
+        data_tests:
+          - not_null
+      - name: monthly_subscription_revenue_usd
+        data_type: DECIMAL(18,2)
+        description: >-
+          Estimated service-period revenue: annualized amount divided by 12, prorated
+          by inclusive service days and calendar days in the month. Includes contracts
+          ending during the month. Contributions are summed before rounding to cents.
+          Zero when no resolved contracts provide service; not recognized accounting revenue.
+        data_tests:
+          - not_null
+
 unit_tests:
   # Customer reporting months
   - name: customer_months_follow_start_dates_and_shared_cutoff
@@ -183,3 +222,29 @@ unit_tests:
         - {customer_id: C1, resolution_status: resolved, reporting_month: '2026-04-01', cloud_cost_usd: 15.70}
         - {customer_id: C2, resolution_status: resolved, reporting_month: '2026-04-01', cloud_cost_usd: 0}
         - {customer_id: C3, resolution_status: resolved, reporting_month: '2026-04-01', cloud_cost_usd: null}
+
+  # Customer subscription value and estimated revenue
+  - name: subscriptions_add_overlapping_contracts_and_prorate_service
+    description: >-
+      Annual and monthly contracts add together at month-end. Partial-month and ended
+      contracts contribute revenue for their service days. Missing contracts produce
+      zeros, and unresolved contracts are excluded.
+    model: int_customer_subscription_metrics
+    given:
+      - input: ref('fct_contracts')
+        rows:
+          - {contract_id: K1, customer_id: C1, resolution_status: resolved, billing_period: annual, recurring_amount_usd: 1200, starts_on: '2026-04-01', ends_on: null, status: active}
+          - {contract_id: K2, customer_id: C1, resolution_status: resolved, billing_period: monthly, recurring_amount_usd: 100, starts_on: '2026-04-01', ends_on: null, status: active}
+          - {contract_id: K3, customer_id: C1, resolution_status: resolved, billing_period: monthly, recurring_amount_usd: 60, starts_on: '2026-04-16', ends_on: null, status: active}
+          - {contract_id: K4, customer_id: C1, resolution_status: resolved, billing_period: annual, recurring_amount_usd: 1200, starts_on: '2026-04-01', ends_on: '2026-04-15', status: cancelled}
+          - {contract_id: K5, customer_id: null, resolution_status: unresolved_customer, billing_period: monthly, recurring_amount_usd: 999, starts_on: '2026-04-01', ends_on: null, status: active}
+      - input: ref('int_customer_month_spine')
+        rows:
+          - {customer_id: C1, reporting_month: '2026-03-01'}
+          - {customer_id: C1, reporting_month: '2026-04-01'}
+          - {customer_id: C2, reporting_month: '2026-04-01'}
+    expect:
+      rows:
+        - {customer_id: C1, reporting_month: '2026-03-01', annualized_subscription_value_usd: 0, monthly_subscription_revenue_usd: 0}
+        - {customer_id: C1, reporting_month: '2026-04-01', annualized_subscription_value_usd: 3120, monthly_subscription_revenue_usd: 280}
+        - {customer_id: C2, reporting_month: '2026-04-01', annualized_subscription_value_usd: 0, monthly_subscription_revenue_usd: 0}
