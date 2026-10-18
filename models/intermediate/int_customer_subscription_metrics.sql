@@ -1,3 +1,15 @@
+-- Calculates annualized subscription value and estimated revenue, one row per customer per reporting month.
+-- Annualized value is a month-end snapshot; revenue reflects inclusive service days, including partial months.
+-- Months without qualifying contracts have zero values. Fractional cents are retained through aggregation
+-- before revenue is rounded to cents. These metrics support published subscription and gross-margin reporting.
+-- For internal transformations only; analysts should use the published tables.
+--
+-- Example data:
+-- | customer_id | reporting_month | annualized_subscription_value_usd | monthly_subscription_revenue_usd |
+-- | ----------- | --------------- | --------------------------------- | -------------------------------- |
+-- | C1          | 2026-03-01      | 1200.00                           | 100.00                           |
+-- | C1          | 2026-04-01      | 0.00                              | 50.00                            |
+-- | C2          | 2026-04-01      | 0.00                              | 0.00                             |
 {{ config(materialized='table', schema='intermediate', contract={'enforced': true}) }}
 
 with contract_months as (

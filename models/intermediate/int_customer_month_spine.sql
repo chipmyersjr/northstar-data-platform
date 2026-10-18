@@ -1,6 +1,15 @@
 -- Shared helper view defining customer-month reporting periods for subscription, usage, and cloud-cost models.
+-- One row per customer per reporting month, from the month of the earliest resolved contract start
+-- or mapped workspace creation through the shared reporting cutoff.
 -- Keeps reporting-window logic in one place, simplifies downstream SQL, and is easy to inspect and debug.
 -- For internal transformations only; analysts should use the published tables.
+--
+-- Example data:
+-- | customer_id | reporting_month |
+-- | ----------- | --------------- |
+-- | C1          | 2026-03-01      |
+-- | C1          | 2026-04-01      |
+-- | C2          | 2026-04-01      |
 {{ config(materialized='view', schema='intermediate') }}
 
 with common_months as (

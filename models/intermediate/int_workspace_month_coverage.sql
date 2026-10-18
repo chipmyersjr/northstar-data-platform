@@ -1,7 +1,15 @@
 -- Checks whether each active workspace has usage and cloud-cost records for the month.
--- Both published models use these checks to determine customer-month eligibility and explain exclusions.
+-- One row per active, resolved workspace per reporting month.
+-- Both published models use these checks to determine customer-month eligibility and report missing records.
 -- A view keeps this reusable logic queryable without a separately stored table.
 -- For internal transformations only; analysts should use the published tables.
+--
+-- Example data:
+-- | customer_id | reporting_month | workspace_id | has_usage | has_cost |
+-- | ----------- | --------------- | ------------ | --------- | -------- |
+-- | C1          | 2026-04-01      | W1           | true      | true     |
+-- | C1          | 2026-04-01      | W2           | false     | true     |
+-- | C2          | 2026-04-01      | W3           | true      | false    |
 {{ config(materialized='view', schema='intermediate') }}
 
 with active_workspaces as (
