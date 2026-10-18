@@ -103,6 +103,11 @@ models:
 # calculations using controlled inputs and expected outputs. Simpler models
 # rely on data tests to validate their contracts and data integrity.
 unit_tests:
+  # C1: complete multi-workspace coverage -> published
+  # C2: missing usage -> excluded
+  # C3: missing cost -> excluded
+  # C4: observed zeros -> published with NULL margin
+  # C5: no active workspace -> excluded
   - name: customer_months_require_all_workspace_observations
     description: Publishes complete coverage and observed zeros with NULL margin for zero revenue. Excludes partial multi-workspace coverage and customer-months without
       active workspaces, even when intermediate totals exist.
