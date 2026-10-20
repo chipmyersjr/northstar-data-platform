@@ -44,8 +44,8 @@ models:
           Do not sum or directly average percentages.
 
   - name: monthly_data_quality_exceptions
-    description: Explains missing active-workspace observations and unresolved usage, cost, and contract attribution. Grain is one row per workspace-month
-      and missing observation type, one row per unresolved usage/cost record, or one row per unresolved contract per active service month.
+    description: Explains missing active-workspace observations, resolved usage/cost records outside workspace-active months, and unresolved attribution. Grain is one row per workspace-month
+      and missing observation type, one row per excluded usage/cost record, or one row per unresolved contract per active service month.
       Contracts are capped at the source-derived reporting cutoff; usage/cost exceptions may include later months. Contract amounts are
       estimated unattributed monthly revenue; cloud-cost amounts are excluded actual costs. Do not sum the two together. These amounts
       do not total metrics withheld with an entire customer-month. Customer-months with no active workspaces are not represented.
@@ -60,7 +60,7 @@ models:
           - not_null
       - name: issue_category
         data_type: VARCHAR
-        description: Mapping for unresolved attribution; completeness for missing observations.
+        description: Mapping for unresolved attribution; completeness for missing observations; lifecycle for resolved records outside workspace-active months.
         data_tests:
           - not_null
           - accepted_values:
@@ -68,9 +68,10 @@ models:
                 values:
                   - mapping
                   - completeness
+                  - lifecycle
       - name: issue_reason
         data_type: VARCHAR
-        description: Canonical resolution status or the specific missing observation.
+        description: Canonical resolution status, missing observation, or pre-creation/post-deletion lifecycle exclusion.
         data_tests:
           - not_null
           - accepted_values:
@@ -81,24 +82,26 @@ models:
                   - missing_workspace
                   - missing_usage
                   - missing_cloud_cost
+                  - post_deletion
+                  - pre_creation
       - name: workspace_id
         data_type: VARCHAR
         description: Available workspace identifier; NULL when missing from the source.
       - name: customer_id
         data_type: VARCHAR
-        description: Known customer for missing observations; NULL for unresolved attribution.
+        description: Known customer for completeness or lifecycle exceptions; NULL for unresolved attribution.
       - name: source_row_id
         data_type: BIGINT
         description: Original source-row reference preserved in the canonical fact; NULL for missing observations.
       - name: excluded_financial_amount_usd
         data_type: DECIMAL(18,2)
-        description: Estimated unattributed monthly contract revenue or excluded actual cloud costs; do not sum across these source types. Otherwise NULL.
+        description: Estimated unattributed monthly contract revenue or excluded actual cloud costs from mapping/lifecycle exceptions; do not sum across these source types. Otherwise NULL.
       - name: excluded_active_users
         data_type: BIGINT
-        description: Observed active-user count for an unresolved usage record; otherwise NULL.
+        description: Original active-user count for a mapping or lifecycle usage exception; otherwise NULL.
       - name: excluded_api_calls
         data_type: BIGINT
-        description: Observed API calls for an unresolved usage record; otherwise NULL.
+        description: Original API calls for a mapping or lifecycle usage exception; otherwise NULL.
 
 # Unit tests validate transformation logic involving joins, aggregations, and
 # calculations using controlled inputs and expected outputs. Simpler models
@@ -160,7 +163,7 @@ unit_tests:
 
   - name: exceptions_explain_missing_observations_and_unresolved_records
     description: Reports missing usage and costs separately, skips observed zeros and resolved records, and preserves unresolved reasons, source rows, months, and excluded
-      metrics. Contract revenue covers partial months, inclusive end dates, half-cent rounding, and the source-derived cutoff.
+      metrics. Resolved pre-creation/post-deletion records retain their amounts; unresolved records stay mapping exceptions. Contract revenue covers partial months, inclusive end dates, half-cent rounding, and the source-derived cutoff.
     model: monthly_data_quality_exceptions
     given:
       - input: ref('int_workspace_month_coverage')
@@ -170,14 +173,18 @@ unit_tests:
           - {customer_id: C1, reporting_month: '2026-04-01', workspace_id: W3, has_usage: true, has_cost: true}
       - input: ref('fct_workspace_usage')
         rows:
-          - {customer_id: null, workspace_id: W7, usage_month: '2026-04-01', resolution_status: unresolved_customer, active_users: 2, api_calls: 20, source_row_id: 1}
-          - {customer_id: null, workspace_id: W999, usage_month: '2026-05-01', resolution_status: unknown_workspace, active_users: 3, api_calls: 30, source_row_id: 2}
-          - {customer_id: C1, workspace_id: W3, usage_month: '2026-04-01', resolution_status: resolved, active_users: 0, api_calls: 0, source_row_id: 3}
+          - {customer_id: null, workspace_id: W7, usage_month: '2026-04-01', resolution_status: unresolved_customer, lifecycle_status: post_deletion, active_users: 2, api_calls: 20, source_row_id: 1}
+          - {customer_id: null, workspace_id: W999, usage_month: '2026-05-01', resolution_status: unknown_workspace, lifecycle_status: unknown, active_users: 3, api_calls: 30, source_row_id: 2}
+          - {customer_id: C1, workspace_id: W3, usage_month: '2026-04-01', resolution_status: resolved, lifecycle_status: active, active_users: 0, api_calls: 0, source_row_id: 3}
+          - {customer_id: C1, workspace_id: W4, usage_month: '2026-04-01', resolution_status: resolved, lifecycle_status: post_deletion, active_users: 9, api_calls: 90, source_row_id: 10}
+          - {customer_id: C1, workspace_id: W5, usage_month: '2026-04-01', resolution_status: resolved, lifecycle_status: pre_creation, active_users: 8, api_calls: 80, source_row_id: 11}
       - input: ref('fct_workspace_cloud_costs')
         rows:
-          - {customer_id: null, workspace_id: null, usage_month: '2026-04-01', resolution_status: missing_workspace, compute_cost_usd: 10, storage_cost_usd: 2, source_row_id: 4}
-          - {customer_id: null, workspace_id: W7, usage_month: '2026-04-01', resolution_status: unresolved_customer, compute_cost_usd: 3, storage_cost_usd: 1, source_row_id: 5}
-          - {customer_id: C1, workspace_id: W3, usage_month: '2026-04-01', resolution_status: resolved, compute_cost_usd: 0, storage_cost_usd: 0, source_row_id: 6}
+          - {customer_id: null, workspace_id: null, usage_month: '2026-04-01', resolution_status: missing_workspace, lifecycle_status: unknown, compute_cost_usd: 10, storage_cost_usd: 2, source_row_id: 4}
+          - {customer_id: null, workspace_id: W7, usage_month: '2026-04-01', resolution_status: unresolved_customer, lifecycle_status: post_deletion, compute_cost_usd: 3, storage_cost_usd: 1, source_row_id: 5}
+          - {customer_id: C1, workspace_id: W3, usage_month: '2026-04-01', resolution_status: resolved, lifecycle_status: active, compute_cost_usd: 0, storage_cost_usd: 0, source_row_id: 6}
+          - {customer_id: C1, workspace_id: W4, usage_month: '2026-04-01', resolution_status: resolved, lifecycle_status: post_deletion, compute_cost_usd: 9, storage_cost_usd: 1, source_row_id: 12}
+          - {customer_id: C1, workspace_id: W5, usage_month: '2026-04-01', resolution_status: resolved, lifecycle_status: pre_creation, compute_cost_usd: 8, storage_cost_usd: 2, source_row_id: 13}
       - input: ref('fct_contracts')
         rows:
           - {contract_id: K7, customer_id: null, resolution_status: unresolved_customer, starts_on: '2026-02-15', ends_on: '2026-04-01', recurring_amount_usd: 1200, billing_period: annual, source_row_id: 7}
@@ -215,3 +222,11 @@ unit_tests:
           customer_id: null, source_row_id: 8, excluded_financial_amount_usd: 0.54, excluded_active_users: null, excluded_api_calls: null}
         - {reporting_month: '2026-04-01', source_table: canonical.fct_contracts, issue_category: mapping, issue_reason: unresolved_customer, workspace_id: null,
           customer_id: null, source_row_id: 9, excluded_financial_amount_usd: 1.01, excluded_active_users: null, excluded_api_calls: null}
+        - {reporting_month: '2026-04-01', source_table: canonical.fct_workspace_usage, issue_category: lifecycle, issue_reason: post_deletion, workspace_id: W4,
+          customer_id: C1, source_row_id: 10, excluded_financial_amount_usd: null, excluded_active_users: 9, excluded_api_calls: 90}
+        - {reporting_month: '2026-04-01', source_table: canonical.fct_workspace_usage, issue_category: lifecycle, issue_reason: pre_creation, workspace_id: W5,
+          customer_id: C1, source_row_id: 11, excluded_financial_amount_usd: null, excluded_active_users: 8, excluded_api_calls: 80}
+        - {reporting_month: '2026-04-01', source_table: canonical.fct_workspace_cloud_costs, issue_category: lifecycle, issue_reason: post_deletion, workspace_id: W4,
+          customer_id: C1, source_row_id: 12, excluded_financial_amount_usd: 10, excluded_active_users: null, excluded_api_calls: null}
+        - {reporting_month: '2026-04-01', source_table: canonical.fct_workspace_cloud_costs, issue_category: lifecycle, issue_reason: pre_creation, workspace_id: W5,
+          customer_id: C1, source_row_id: 13, excluded_financial_amount_usd: 10, excluded_active_users: null, excluded_api_calls: null}

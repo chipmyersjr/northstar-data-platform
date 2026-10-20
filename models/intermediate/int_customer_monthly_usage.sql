@@ -1,4 +1,4 @@
--- Aggregates resolved workspace usage into one row per customer per month with observed usage.
+-- Aggregates resolved, active-month workspace usage into one row per customer per month with observed usage.
 -- Months without observations have no row; missing usage is not converted to zero.
 -- These totals combine with the other intermediate metrics in published customer reporting.
 -- For internal transformations only; analysts should use the published tables.
@@ -19,6 +19,7 @@ with usage_totals as (
         cast(sum(api_calls) as bigint) as product_usage_api_calls
     from {{ ref('fct_workspace_usage') }}
     where resolution_status = 'resolved'
+        and lifecycle_status = 'active'
     group by customer_id, usage_month
 )
 select

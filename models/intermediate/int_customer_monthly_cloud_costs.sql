@@ -1,4 +1,4 @@
--- Aggregates resolved workspace compute and storage costs into one row per customer per reporting month.
+-- Aggregates resolved, active-month workspace compute and storage costs into one row per customer per reporting month.
 -- NULL means no observed costs; zero means observed zero-dollar costs. Retains all shared reporting months.
 -- These totals support published cloud-cost reporting and gross-margin calculations.
 -- For internal transformations only; analysts should use the published tables.
@@ -18,6 +18,7 @@ with cost_totals as (
         cast(sum(compute_cost_usd + storage_cost_usd) as decimal(18, 2)) as cloud_cost_usd
     from {{ ref('fct_workspace_cloud_costs') }}
     where resolution_status = 'resolved'
+        and lifecycle_status = 'active'
     group by customer_id, usage_month
 )
 select

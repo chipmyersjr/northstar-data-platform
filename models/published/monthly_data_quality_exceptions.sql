@@ -39,8 +39,8 @@ union all
 select
     usage_month as reporting_month,
     'canonical.fct_workspace_usage' as source_table,
-    'mapping' as issue_category,
-    resolution_status as issue_reason,
+    case when resolution_status = 'resolved' then 'lifecycle' else 'mapping' end as issue_category,
+    case when resolution_status = 'resolved' then lifecycle_status else resolution_status end as issue_reason,
     workspace_id,
     customer_id,
     source_row_id,
@@ -49,14 +49,15 @@ select
     api_calls as excluded_api_calls
 from {{ ref('fct_workspace_usage') }}
 where resolution_status <> 'resolved'
+    or lifecycle_status in ('post_deletion', 'pre_creation')
 
 union all
 
 select
     usage_month as reporting_month,
     'canonical.fct_workspace_cloud_costs' as source_table,
-    'mapping' as issue_category,
-    resolution_status as issue_reason,
+    case when resolution_status = 'resolved' then 'lifecycle' else 'mapping' end as issue_category,
+    case when resolution_status = 'resolved' then lifecycle_status else resolution_status end as issue_reason,
     workspace_id,
     customer_id,
     source_row_id,
@@ -65,6 +66,7 @@ select
     cast(null as bigint) as excluded_api_calls
 from {{ ref('fct_workspace_cloud_costs') }}
 where resolution_status <> 'resolved'
+    or lifecycle_status in ('post_deletion', 'pre_creation')
 
 union all
 
