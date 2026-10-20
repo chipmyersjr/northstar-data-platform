@@ -44,14 +44,15 @@ models:
           Do not sum or directly average percentages.
 
   - name: monthly_data_quality_exceptions
-    description: Explains missing active-workspace observations and unresolved usage/cost attribution. Grain is one row per workspace-month
-      and missing observation type, or one row per unresolved canonical source record. Includes reporting months outside published metrics.
-      Excluded amounts describe individual unresolved records, not totals withheld with an entire customer-month. Unresolved contracts
-      and customer-months with no active workspaces are not represented.
+    description: Explains missing active-workspace observations and unresolved usage, cost, and contract attribution. Grain is one row per workspace-month
+      and missing observation type, one row per unresolved usage/cost record, or one row per unresolved contract per active service month.
+      Contracts are capped at the source-derived reporting cutoff; usage/cost exceptions may include later months. Contract amounts are
+      estimated unattributed monthly revenue; cloud-cost amounts are excluded actual costs. Do not sum the two together. These amounts
+      do not total metrics withheld with an entire customer-month. Customer-months with no active workspaces are not represented.
     columns:
       - name: reporting_month
         data_type: DATE
-        description: Affected reporting month from coverage or the canonical source record.
+        description: Affected reporting month; contracts use each active service month through the source-derived cutoff.
       - name: source_table
         data_type: VARCHAR
         description: Canonical fact containing the unresolved record or missing observation.
@@ -91,7 +92,7 @@ models:
         description: Original source-row reference preserved in the canonical fact; NULL for missing observations.
       - name: excluded_financial_amount_usd
         data_type: DECIMAL(18,2)
-        description: Compute plus storage amounts for an unresolved cost record; otherwise NULL.
+        description: Estimated unattributed monthly contract revenue or excluded actual cloud costs; do not sum across these source types. Otherwise NULL.
       - name: excluded_active_users
         data_type: BIGINT
         description: Observed active-user count for an unresolved usage record; otherwise NULL.
@@ -159,7 +160,7 @@ unit_tests:
 
   - name: exceptions_explain_missing_observations_and_unresolved_records
     description: Reports missing usage and costs separately, skips observed zeros and resolved records, and preserves unresolved reasons, source rows, months, and excluded
-      metrics.
+      metrics. Contract revenue covers partial months, inclusive end dates, half-cent rounding, and the source-derived cutoff.
     model: monthly_data_quality_exceptions
     given:
       - input: ref('int_workspace_month_coverage')
@@ -177,6 +178,17 @@ unit_tests:
           - {customer_id: null, workspace_id: null, usage_month: '2026-04-01', resolution_status: missing_workspace, compute_cost_usd: 10, storage_cost_usd: 2, source_row_id: 4}
           - {customer_id: null, workspace_id: W7, usage_month: '2026-04-01', resolution_status: unresolved_customer, compute_cost_usd: 3, storage_cost_usd: 1, source_row_id: 5}
           - {customer_id: C1, workspace_id: W3, usage_month: '2026-04-01', resolution_status: resolved, compute_cost_usd: 0, storage_cost_usd: 0, source_row_id: 6}
+      - input: ref('fct_contracts')
+        rows:
+          - {contract_id: K7, customer_id: null, resolution_status: unresolved_customer, starts_on: '2026-02-15', ends_on: '2026-04-01', recurring_amount_usd: 1200, billing_period: annual, source_row_id: 7}
+          - {contract_id: K8, customer_id: null, resolution_status: unresolved_customer, starts_on: '2026-02-01', ends_on: '2026-02-01', recurring_amount_usd: 14.98, billing_period: monthly, source_row_id: 8}
+          - {contract_id: K9, customer_id: null, resolution_status: unresolved_customer, starts_on: '2026-04-30', ends_on: null, recurring_amount_usd: 30.15, billing_period: monthly, source_row_id: 9}
+      # February contract exceptions are retained even though the spine starts in March.
+      # The spine supplies the reporting cutoff, not the set of eligible contract months.
+      - input: ref('int_customer_month_spine')
+        rows:
+          - {customer_id: C1, reporting_month: '2026-03-01'}
+          - {customer_id: C1, reporting_month: '2026-04-01'}
     expect:
       rows:
         - {reporting_month: '2026-04-01', source_table: canonical.fct_workspace_usage, issue_category: completeness, issue_reason: missing_usage, workspace_id: W1,
@@ -193,3 +205,13 @@ unit_tests:
           customer_id: null, source_row_id: 4, excluded_financial_amount_usd: 12, excluded_active_users: null, excluded_api_calls: null}
         - {reporting_month: '2026-04-01', source_table: canonical.fct_workspace_cloud_costs, issue_category: mapping, issue_reason: unresolved_customer, workspace_id: W7,
           customer_id: null, source_row_id: 5, excluded_financial_amount_usd: 4, excluded_active_users: null, excluded_api_calls: null}
+        - {reporting_month: '2026-02-01', source_table: canonical.fct_contracts, issue_category: mapping, issue_reason: unresolved_customer, workspace_id: null,
+          customer_id: null, source_row_id: 7, excluded_financial_amount_usd: 50.00, excluded_active_users: null, excluded_api_calls: null}
+        - {reporting_month: '2026-03-01', source_table: canonical.fct_contracts, issue_category: mapping, issue_reason: unresolved_customer, workspace_id: null,
+          customer_id: null, source_row_id: 7, excluded_financial_amount_usd: 100.00, excluded_active_users: null, excluded_api_calls: null}
+        - {reporting_month: '2026-04-01', source_table: canonical.fct_contracts, issue_category: mapping, issue_reason: unresolved_customer, workspace_id: null,
+          customer_id: null, source_row_id: 7, excluded_financial_amount_usd: 3.33, excluded_active_users: null, excluded_api_calls: null}
+        - {reporting_month: '2026-02-01', source_table: canonical.fct_contracts, issue_category: mapping, issue_reason: unresolved_customer, workspace_id: null,
+          customer_id: null, source_row_id: 8, excluded_financial_amount_usd: 0.54, excluded_active_users: null, excluded_api_calls: null}
+        - {reporting_month: '2026-04-01', source_table: canonical.fct_contracts, issue_category: mapping, issue_reason: unresolved_customer, workspace_id: null,
+          customer_id: null, source_row_id: 9, excluded_financial_amount_usd: 1.01, excluded_active_users: null, excluded_api_calls: null}
