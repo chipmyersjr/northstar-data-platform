@@ -37,6 +37,26 @@ make test     # run tests without rebuilding models
 make verify   # restore, build, and test from a clean warehouse
 ```
 
+## Example analyst queries
+
+After completing `make install`, `make setup`, and a successful `make build`, run
+from the repository root:
+
+```sh
+make queries
+```
+
+This opens `warehouse.duckdb` read-only and displays five labeled SQL examples
+from `queries/`: annualized subscription value, product usage, cloud cost, and
+gross-margin percentage by customer and reporting month, plus data-quality issues
+filtered to April 2026. It does not rebuild data.
+
+`published.customer_monthly_metrics` provides eligible customer-month metrics
+without additional joins or cleaning. Omitted customer-months are unreportable,
+not zero. `published.monthly_data_quality_exceptions` explains missing workspace
+observations and unresolved usage/cost attribution; it does not include unresolved
+contracts or customer-months with no active workspaces.
+
 ## Troubleshooting
 
 DuckDB database locks can occur when another application or process has an active

@@ -201,7 +201,9 @@ models:
       each run. All usage records are retained without aggregation, including
       missing or unknown workspace references and historical usage for deleted
       workspaces. Attribution uses the current workspace mapping; unresolved usage
-      is preserved for downstream exceptions, not assigned to customer totals.
+      is preserved for downstream exceptions, not assigned to customer totals. Lifecycle
+      status is independent of attribution; only active-month records contribute to
+      customer metrics, while resolved pre-creation/post-deletion records become exceptions.
     columns:
       - name: usage_id
         data_type: VARCHAR
@@ -230,6 +232,14 @@ models:
           - accepted_values:
               arguments:
                 values: ['resolved', 'unresolved_customer', 'unknown_workspace', 'missing_workspace']
+      - name: lifecycle_status
+        data_type: VARCHAR
+        description: Active during the month, before creation, after deletion, or unknown when the workspace is missing or unmatched.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['active', 'post_deletion', 'pre_creation', 'unknown']
       - name: usage_month
         data_type: DATE
         description: First day of the usage reporting month, preserved from staging.
@@ -270,7 +280,9 @@ models:
       All charges are retained with exact amounts, including unresolved costs and
       multiple charges for the same workspace-month. Attribution uses the current
       workspace mapping, including for historical costs of deleted workspaces.
-      No aggregation, deduplication, or customer metric calculation is performed.
+      Lifecycle status is independent of attribution; only active-month records
+      contribute to customer metrics, while resolved pre-creation/post-deletion charges
+      become exceptions. No aggregation or deduplication is performed.
     columns:
       - name: cost_id
         data_type: VARCHAR
@@ -299,6 +311,14 @@ models:
           - accepted_values:
               arguments:
                 values: ['resolved', 'unresolved_customer', 'unknown_workspace', 'missing_workspace']
+      - name: lifecycle_status
+        data_type: VARCHAR
+        description: Active during the month, before creation, after deletion, or unknown when the workspace is missing or unmatched.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['active', 'post_deletion', 'pre_creation', 'unknown']
       - name: usage_month
         data_type: DATE
         description: First day of the month costs were incurred, preserved from staging.

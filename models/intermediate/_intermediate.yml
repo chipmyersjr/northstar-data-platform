@@ -1,0 +1,349 @@
+version: 2
+
+models:
+  - name: int_customer_month_spine
+    description: >-
+      Shared helper view defining customer reporting months for subscription, usage,
+      and cloud-cost models. Starts at the earliest resolved contract or mapped workspace
+      creation and ends at the latest shared usage/cost month; this does not establish
+      workspace-level coverage. Intermediate objects are for internal transformation
+      use, not analyst access. Analyst-facing data comes from the published layer.
+    columns:
+      - name: customer_id
+        description: Canonical customer ID; forms the reporting key with reporting_month.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_id
+      - name: reporting_month
+        description: First day of the reporting month, through the source-derived cutoff.
+        data_tests:
+          - not_null
+
+  - name: int_customer_monthly_usage
+    description: >-
+      Observed resolved, active-month workspace usage summed by customer and reporting month within the
+      shared reporting window. Missing usage produces no row; observed zeros remain
+      zero. Active users are workspace counts, not distinct people across workspaces.
+    columns:
+      - name: customer_id
+        data_type: VARCHAR
+        description: Resolved canonical customer ID; forms the key with reporting_month.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_id
+      - name: resolution_status
+        data_type: VARCHAR
+        description: Always resolved; unresolved records are excluded from customer totals.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['resolved']
+      - name: reporting_month
+        data_type: DATE
+        description: First day of the usage month, restricted to the shared customer-month spine.
+        data_tests:
+          - not_null
+      - name: product_usage_active_users
+        data_type: BIGINT
+        description: Sum of observed workspace active-user counts; people may overlap across workspaces.
+        data_tests:
+          - not_null
+      - name: product_usage_api_calls
+        data_type: BIGINT
+        description: Sum of observed API-call counts across the customer's workspaces for the month.
+        data_tests:
+          - not_null
+
+  - name: int_customer_monthly_cloud_costs
+    description: >-
+      Observed resolved, active-month workspace charges summed by customer and reporting month. Retains
+      every customer-month in the shared reporting window, with NULL for missing
+      costs and zero for observed zero-dollar charges. Multiple charges are additive.
+    columns:
+      - name: customer_id
+        data_type: VARCHAR
+        description: Canonical customer ID; forms the key with reporting_month.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_id
+      - name: resolution_status
+        data_type: VARCHAR
+        description: Always resolved for customer-month rows; does not indicate cost coverage.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['resolved']
+      - name: reporting_month
+        data_type: DATE
+        description: First day of the reporting month from the shared customer-month spine.
+        data_tests:
+          - not_null
+      - name: cloud_cost_usd
+        data_type: DECIMAL(18,2)
+        description: >-
+          Sum of observed compute and storage costs from all resolved charges for
+          the customer-month. NULL when no matching records exist; zero only when
+          matching charges sum to zero. Observed totals do not prove complete billing.
+
+  - name: int_customer_subscription_metrics
+    description: >-
+      Subscription value and estimated revenue for every customer-month in the shared
+      reporting window, fully rebuilt each run. Resolved overlapping contracts are
+      additive. Months with no eligible contracts have zero metrics; unresolved
+      contracts are not assigned to customers. Publication reliability is checked separately.
+    columns:
+      - name: customer_id
+        data_type: VARCHAR
+        description: Canonical customer ID; forms the key with reporting_month.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_id
+      - name: reporting_month
+        data_type: DATE
+        description: First day of the reporting month from the shared customer-month spine.
+        data_tests:
+          - not_null
+      - name: annualized_subscription_value_usd
+        data_type: DECIMAL(18,2)
+        description: >-
+          Month-end snapshot of contracts effective on the month's final day, using
+          inclusive service dates. Annual amounts are unchanged; monthly amounts
+          are multiplied by 12. Zero when no resolved contracts are eligible at month-end.
+        data_tests:
+          - not_null
+      - name: monthly_subscription_revenue_usd
+        data_type: DECIMAL(18,2)
+        description: >-
+          Estimated service-period revenue: annualized amount divided by 12, prorated
+          by inclusive service days and calendar days in the month. Includes contracts
+          ending during the month. Contributions are summed before rounding to cents.
+          Zero when no resolved contracts provide service; not recognized accounting revenue.
+        data_tests:
+          - not_null
+
+  - name: int_workspace_month_coverage
+    description: >-
+      Internal helper view with one row per active, resolved, mapped workspace and
+      reporting month. Shares coverage checks between the published models without
+      storing a separate table. Observed zeros count as coverage; missing observations
+      do not. Intended for transformations, not direct analyst access.
+    columns:
+      - name: customer_id
+        data_type: VARCHAR
+        description: Resolved owner of the active workspace.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_id
+      - name: reporting_month
+        data_type: DATE
+        description: First day of the reporting month from the customer-month spine.
+        data_tests:
+          - not_null
+      - name: workspace_id
+        data_type: VARCHAR
+        description: Resolved mapped workspace active during the reporting month.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_workspaces')
+                field: workspace_id
+      - name: has_usage
+        data_type: BOOLEAN
+        description: True when resolved usage has nonnull active-user and API-call counts, including zeros.
+        data_tests:
+          - not_null
+      - name: has_cost
+        data_type: BOOLEAN
+        description: True when a resolved charge has nonnull compute and storage amounts, including zeros.
+        data_tests:
+          - not_null
+
+# Unit tests validate transformation logic involving joins, aggregations, and
+# calculations using controlled inputs and expected outputs. Simpler models
+# rely on data tests to validate their contracts and data integrity.
+unit_tests:
+  # Customer reporting months
+  - name: customer_months_follow_start_dates_and_shared_cutoff
+    description: >-
+      Customers start reporting in different months based on their first contract
+      or workspace. Reporting continues after a contract ends and stops at the
+      latest month present in both usage and cost data.
+    model: int_customer_month_spine
+    given:
+      - input: ref('dim_customer')
+        rows:
+          - {customer_id: C1}
+          - {customer_id: C2}
+      - input: ref('fct_contracts')
+        rows:
+          - {customer_id: C1, resolution_status: resolved, starts_on: '2026-02-15', ends_on: '2026-02-28', status: cancelled}
+      - input: ref('dim_workspaces')
+        rows:
+          - {workspace_id: W1, created_at: '2026-03-31'}
+          - {workspace_id: W2, created_at: '2026-03-01'}
+      - input: ref('map_customer_workspaces')
+        rows:
+          - {workspace_id: W1, customer_id: C1, resolution_status: resolved}
+          - {workspace_id: W2, customer_id: C2, resolution_status: resolved}
+      - input: ref('stg_usage')
+        rows:
+          - {workspace_id: W1, usage_month: '2026-04-01'}
+          - {workspace_id: W1, usage_month: '2026-05-01'}
+      - input: ref('stg_cloud_costs')
+        rows:
+          - {workspace_id: W2, usage_month: '2026-04-01'}
+          - {workspace_id: W2, usage_month: '2026-06-01'}
+    expect:
+      rows:
+        - {customer_id: C1, reporting_month: '2026-02-01'}
+        - {customer_id: C1, reporting_month: '2026-03-01'}
+        - {customer_id: C1, reporting_month: '2026-04-01'}
+        - {customer_id: C2, reporting_month: '2026-03-01'}
+        - {customer_id: C2, reporting_month: '2026-04-01'}
+
+  # Monthly customer usage
+  - name: customer_usage_adds_workspaces_and_skips_missing_months
+    description: >-
+      Adds usage across a customer's workspaces, excludes unresolved usage, keeps
+      observed zeros, and omits missing months, inactive workspace records, and months outside the reporting window.
+    model: int_customer_monthly_usage
+    given:
+      - input: ref('fct_workspace_usage')
+        rows:
+          - {customer_id: C1, workspace_id: W1, resolution_status: resolved, lifecycle_status: active, usage_month: '2026-04-01', active_users: 3, api_calls: 100}
+          - {customer_id: C1, workspace_id: W2, resolution_status: resolved, lifecycle_status: active, usage_month: '2026-04-01', active_users: 4, api_calls: 250}
+          - {customer_id: C2, workspace_id: W3, resolution_status: resolved, lifecycle_status: active, usage_month: '2026-04-01', active_users: 0, api_calls: 0}
+          - {customer_id: C1, workspace_id: W1, resolution_status: resolved, lifecycle_status: active, usage_month: '2026-05-01', active_users: 99, api_calls: 999}
+          - {customer_id: null, workspace_id: W4, resolution_status: unresolved_customer, lifecycle_status: active, usage_month: '2026-04-01', active_users: 5, api_calls: 500}
+          - {customer_id: C1, workspace_id: W5, resolution_status: resolved, lifecycle_status: post_deletion, usage_month: '2026-04-01', active_users: 90, api_calls: 900}
+          - {customer_id: C1, workspace_id: W6, resolution_status: resolved, lifecycle_status: pre_creation, usage_month: '2026-04-01', active_users: 80, api_calls: 800}
+      - input: ref('int_customer_month_spine')
+        rows:
+          - {customer_id: C1, reporting_month: '2026-04-01'}
+          - {customer_id: C2, reporting_month: '2026-04-01'}
+          - {customer_id: C3, reporting_month: '2026-04-01'}
+    expect:
+      rows:
+        - {customer_id: C1, resolution_status: resolved, reporting_month: '2026-04-01', product_usage_active_users: 7, product_usage_api_calls: 350}
+        - {customer_id: C2, resolution_status: resolved, reporting_month: '2026-04-01', product_usage_active_users: 0, product_usage_api_calls: 0}
+
+  # Monthly customer cloud costs
+  - name: customer_costs_add_charges_and_distinguish_missing_from_zero
+    description: >-
+      Adds separate charges for the same workspace-month, excludes unresolved costs,
+      excludes inactive workspace charges, and keeps NULL for missing costs and zero for observed zero costs.
+    model: int_customer_monthly_cloud_costs
+    given:
+      - input: ref('fct_workspace_cloud_costs')
+        rows:
+          - {cost_id: K1, customer_id: C1, workspace_id: W1, resolution_status: resolved, lifecycle_status: active, usage_month: '2026-04-01', compute_cost_usd: 10.10, storage_cost_usd: 2.20}
+          - {cost_id: K2, customer_id: C1, workspace_id: W1, resolution_status: resolved, lifecycle_status: active, usage_month: '2026-04-01', compute_cost_usd: 3.00, storage_cost_usd: 0.40}
+          - {cost_id: K3, customer_id: C2, workspace_id: W2, resolution_status: resolved, lifecycle_status: active, usage_month: '2026-04-01', compute_cost_usd: 0, storage_cost_usd: 0}
+          - {cost_id: K4, customer_id: null, workspace_id: W3, resolution_status: unresolved_customer, lifecycle_status: active, usage_month: '2026-04-01', compute_cost_usd: 100, storage_cost_usd: 1}
+          - {cost_id: K5, customer_id: C1, workspace_id: W5, resolution_status: resolved, lifecycle_status: post_deletion, usage_month: '2026-04-01', compute_cost_usd: 90, storage_cost_usd: 9}
+          - {cost_id: K6, customer_id: C1, workspace_id: W6, resolution_status: resolved, lifecycle_status: pre_creation, usage_month: '2026-04-01', compute_cost_usd: 80, storage_cost_usd: 8}
+      - input: ref('int_customer_month_spine')
+        rows:
+          - {customer_id: C1, reporting_month: '2026-04-01'}
+          - {customer_id: C2, reporting_month: '2026-04-01'}
+          - {customer_id: C3, reporting_month: '2026-04-01'}
+    expect:
+      rows:
+        - {customer_id: C1, resolution_status: resolved, reporting_month: '2026-04-01', cloud_cost_usd: 15.70}
+        - {customer_id: C2, resolution_status: resolved, reporting_month: '2026-04-01', cloud_cost_usd: 0}
+        - {customer_id: C3, resolution_status: resolved, reporting_month: '2026-04-01', cloud_cost_usd: null}
+
+  # Customer subscription value and estimated revenue
+  - name: subscriptions_add_overlapping_contracts_and_prorate_service
+    description: >-
+      Annual and monthly contracts add together at month-end. Partial-month and ended
+      contracts contribute revenue for their service days. Missing contracts produce
+      zeros, unresolved contracts are excluded, and half-cent revenue rounds up to cents.
+    model: int_customer_subscription_metrics
+    given:
+      - input: ref('fct_contracts')
+        rows:
+          - {contract_id: K1, customer_id: C1, resolution_status: resolved, billing_period: annual, recurring_amount_usd: 1200, starts_on: '2026-04-01', ends_on: null, status: active}
+          - {contract_id: K2, customer_id: C1, resolution_status: resolved, billing_period: monthly, recurring_amount_usd: 100, starts_on: '2026-04-01', ends_on: null, status: active}
+          - {contract_id: K3, customer_id: C1, resolution_status: resolved, billing_period: monthly, recurring_amount_usd: 60, starts_on: '2026-04-16', ends_on: null, status: active}
+          - {contract_id: K4, customer_id: C1, resolution_status: resolved, billing_period: annual, recurring_amount_usd: 1200, starts_on: '2026-04-01', ends_on: '2026-04-15', status: cancelled}
+          - {contract_id: K5, customer_id: null, resolution_status: unresolved_customer, billing_period: monthly, recurring_amount_usd: 999, starts_on: '2026-04-01', ends_on: null, status: active}
+          - {contract_id: K6, customer_id: C3, resolution_status: resolved, billing_period: monthly, recurring_amount_usd: 14.98, starts_on: '2026-02-01', ends_on: '2026-02-01', status: cancelled}
+      - input: ref('int_customer_month_spine')
+        rows:
+          - {customer_id: C1, reporting_month: '2026-03-01'}
+          - {customer_id: C1, reporting_month: '2026-04-01'}
+          - {customer_id: C2, reporting_month: '2026-04-01'}
+          - {customer_id: C3, reporting_month: '2026-02-01'}
+    expect:
+      rows:
+        - {customer_id: C1, reporting_month: '2026-03-01', annualized_subscription_value_usd: 0, monthly_subscription_revenue_usd: 0}
+        - {customer_id: C1, reporting_month: '2026-04-01', annualized_subscription_value_usd: 3120, monthly_subscription_revenue_usd: 280}
+        - {customer_id: C2, reporting_month: '2026-04-01', annualized_subscription_value_usd: 0, monthly_subscription_revenue_usd: 0}
+        - {customer_id: C3, reporting_month: '2026-02-01', annualized_subscription_value_usd: 0, monthly_subscription_revenue_usd: 0.54}
+
+  # Workspace-month observations
+  - name: workspace_coverage_distinguishes_observations_from_missing_records
+    description: >-
+      Flags observed usage and costs, including zeros and multiple charges, without
+      duplicating workspace-months. Missing or null observations are false. Excludes
+      inactive workspaces and unresolved ownership.
+    model: int_workspace_month_coverage
+    given:
+      - input: ref('int_customer_month_spine')
+        rows:
+          - {customer_id: C1, reporting_month: '2026-04-01'}
+      - input: ref('map_customer_workspaces')
+        rows:
+          - {workspace_id: W1, customer_id: C1, resolution_status: resolved}
+          - {workspace_id: W2, customer_id: C1, resolution_status: resolved}
+          - {workspace_id: W3, customer_id: C1, resolution_status: resolved}
+          - {workspace_id: W4, customer_id: C1, resolution_status: resolved}
+          - {workspace_id: W5, customer_id: C1, resolution_status: resolved}
+          - {workspace_id: W6, customer_id: C1, resolution_status: resolved}
+          - {workspace_id: W7, customer_id: null, resolution_status: unresolved_customer}
+      - input: ref('dim_workspaces')
+        rows:
+          - {workspace_id: W1, created_at: '2026-01-01', deleted_at: null}
+          - {workspace_id: W2, created_at: '2026-01-01', deleted_at: null}
+          - {workspace_id: W3, created_at: '2026-01-01', deleted_at: null}
+          - {workspace_id: W4, created_at: '2026-04-30', deleted_at: '2026-04-30'}
+          - {workspace_id: W5, created_at: '2026-01-01', deleted_at: '2026-03-31'}
+          - {workspace_id: W6, created_at: '2026-05-01', deleted_at: null}
+          - {workspace_id: W7, created_at: '2026-01-01', deleted_at: null}
+      - input: ref('fct_workspace_usage')
+        rows:
+          - {customer_id: C1, workspace_id: W1, usage_month: '2026-04-01', resolution_status: resolved, active_users: 3, api_calls: 30}
+          - {customer_id: C1, workspace_id: W3, usage_month: '2026-04-01', resolution_status: resolved, active_users: 4, api_calls: 40}
+          - {customer_id: C1, workspace_id: W4, usage_month: '2026-04-01', resolution_status: resolved, active_users: 0, api_calls: 0}
+      - input: ref('fct_workspace_cloud_costs')
+        rows:
+          - {customer_id: C1, workspace_id: W1, usage_month: '2026-04-01', resolution_status: resolved, compute_cost_usd: 10, storage_cost_usd: 2}
+          - {customer_id: C1, workspace_id: W1, usage_month: '2026-04-01', resolution_status: resolved, compute_cost_usd: 3, storage_cost_usd: 1}
+          - {customer_id: C1, workspace_id: W2, usage_month: '2026-04-01', resolution_status: resolved, compute_cost_usd: 5, storage_cost_usd: 0}
+          - {customer_id: C1, workspace_id: W3, usage_month: '2026-04-01', resolution_status: resolved, compute_cost_usd: 5, storage_cost_usd: null}
+          - {customer_id: C1, workspace_id: W4, usage_month: '2026-04-01', resolution_status: resolved, compute_cost_usd: 0, storage_cost_usd: 0}
+    expect:
+      rows:
+        - {customer_id: C1, reporting_month: '2026-04-01', workspace_id: W1, has_usage: true, has_cost: true}
+        - {customer_id: C1, reporting_month: '2026-04-01', workspace_id: W2, has_usage: false, has_cost: true}
+        - {customer_id: C1, reporting_month: '2026-04-01', workspace_id: W3, has_usage: true, has_cost: false}
+        - {customer_id: C1, reporting_month: '2026-04-01', workspace_id: W4, has_usage: true, has_cost: true}

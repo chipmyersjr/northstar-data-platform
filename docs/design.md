@@ -44,6 +44,7 @@ CREATE TABLE published.customer_monthly_metrics (
 - **Customer-month eligibility:** Publish a month within the source-derived reporting cutoff only when subscription metrics are reliable, customer attribution is resolved, and every known workspace active during that month has at least one valid, selected record for both usage and cloud costs. A workspace is active if it was created by month-end and was not deleted before month-start.
 - If a customer-month fails validation, exclude it and record the reason in `published.monthly_data_quality_exceptions`. Missing usage or cost data is not treated as zero, although confirmed zero activity or no eligible contracts may produce zero values. Gross margin is null when revenue is zero or cannot be calculated reliably.
 - Keep unresolved mappings and unallocated costs visible without assigning them to customers arbitrarily or blocking unrelated customer-months.
+- Canonical usage and cost facts preserve historical records. Exclude records outside workspace-active reporting months from customer metrics and report resolved records as `lifecycle` exceptions with their original values and source-row IDs.
 - **Metric limitations:** Annualized subscription value is a month-end contract snapshot, while monthly subscription revenue is a prorated estimate, not recognized accounting revenue. Usage and cloud costs are observed values; workspace-month records establish coverage, but the source provides no independent evidence that all activity or charges were captured. Gross margin inherits the observed-cost limitation and is not a GAAP gross margin measure.
 - **Aggregation limitations:** Customer-month values should not be treated as complete company-wide totals. Unallocated costs, unresolved mappings, and excluded customer-months may leave activity unrepresented.
 - Do not sum annualized subscription value across months or sum or directly average gross-margin percentages. Active-user counts may overlap across workspaces or customers and do not represent distinct company-wide users. Company-level reporting would need its own aggregation and reconciliation rules.
@@ -66,7 +67,7 @@ CREATE TABLE published.monthly_data_quality_exceptions (
 ```
 
 - `reporting_month` identifies the affected month; retain null when an invalid source date prevents determining it. Source table, available identifiers, and source-row ID support tracing the exception; missing-record exceptions have no source-row ID.
-- Use `completeness` with `missing_usage` or `missing_cloud_cost` when an active workspace has no valid usage or cloud-cost records for the month. Use `mapping` with `unresolved_customer`, `unknown_workspace`, or `missing_workspace` for unresolved attribution. Unexpected invalid records fail dbt validation rather than being published as quarantine exceptions.
+- Use `completeness` with `missing_usage` or `missing_cloud_cost` when an active workspace has no valid usage or cloud-cost records for the month. Use `mapping` with `unresolved_customer`, `unknown_workspace`, or `missing_workspace` for unresolved attribution. Use `lifecycle` with `post_deletion` or `pre_creation` for resolved usage/cost records outside workspace-active months. Unexpected invalid records fail dbt validation rather than being published as quarantine exceptions.
 - Retain excluded customer-months with their specific reasons, along with unresolved usage and unallocated cloud costs.
 
 
@@ -556,6 +557,7 @@ CREATE TABLE canonical.fct_workspace_usage (
     workspace_id VARCHAR,
     customer_id VARCHAR,
     resolution_status VARCHAR NOT NULL,
+    lifecycle_status VARCHAR NOT NULL,
     usage_month DATE NOT NULL,
     active_users BIGINT NOT NULL,
     api_calls BIGINT NOT NULL,
@@ -570,12 +572,13 @@ CREATE TABLE canonical.fct_workspace_usage (
 - Preserve each staging record’s usage and workspace identifiers, `usage_month`, `active_users`, `api_calls`, batch metadata, extraction timestamp, and `source_row_id`, without aggregation or discarding unresolved records.
 - Left join `workspace_id` to `canonical.map_customer_workspaces`. Use `resolved` when the workspace maps to a known customer, `unresolved_customer` when it exists without a resolved customer, `unknown_workspace` when a nonnull ID has no canonical workspace, and `missing_workspace` when the ID is null. Populate `customer_id` only for resolved records.
 - Preserve unresolved usage for `published.monthly_data_quality_exceptions`; never assign it to another customer’s usage totals.
-- Keep historical usage for deleted workspaces, using the current workspace mapping for customer attribution.
+- Keep historical usage for deleted workspaces, using the current workspace mapping for customer attribution. Classify lifecycle separately using `canonical.dim_workspaces`: `pre_creation` when created after month-end, `post_deletion` when deleted before month-start, `unknown` for missing/unmatched workspaces, otherwise `active`. Preserve every record; only active-month records contribute to customer metrics.
 
 **dbt tests and validations**
 
+- Derive `lifecycle_status` from workspace creation and deletion dates; accepted values: `active`, `post_deletion`, `pre_creation`, `unknown`.
 - Staging validates normalized workspace-month uniqueness where a workspace ID exists, valid reporting months, and nonnegative usage counts.
-- `not_null`: `usage_id`, `resolution_status`, `usage_month`, `active_users`, `api_calls`, `source_row_id`; `unique`: `usage_id`, `source_row_id`, and (`workspace_id`, `usage_month`) where workspace ID is nonnull.
+- `not_null`: `usage_id`, `resolution_status`, `lifecycle_status`, `usage_month`, `active_users`, `api_calls`, `source_row_id`; `unique`: `usage_id`, `source_row_id`, and (`workspace_id`, `usage_month`) where workspace ID is nonnull.
 - `accepted_values`: `resolved`, `unresolved_customer`, `missing_workspace`, `unknown_workspace`. Check nonnegative counts and first-of-month usage dates.
 - Validate source-row lineage and usage values against `stg_usage`, customer relationships, and mapping status. Only resolved records have a nonnull `customer_id`.
 - Invalid records, duplicate normalized workspace-month keys, or lineage/attribution consistency violations fail `dbt build`. Expected unresolved workspace/customer attribution alone does not fail the build.
@@ -590,6 +593,7 @@ CREATE TABLE canonical.fct_workspace_cloud_costs (
     workspace_id VARCHAR,
     customer_id VARCHAR,
     resolution_status VARCHAR NOT NULL,
+    lifecycle_status VARCHAR NOT NULL,
     usage_month DATE NOT NULL,
     compute_cost_usd DECIMAL(18,2) NOT NULL,
     storage_cost_usd DECIMAL(18,2) NOT NULL,
@@ -605,11 +609,12 @@ CREATE TABLE canonical.fct_workspace_cloud_costs (
 - Retain multiple legitimate charges for the same workspace-month; do not deduplicate or aggregate by workspace and month.
 - Left join `workspace_id` to `canonical.map_customer_workspaces`. Use `resolved` when the workspace maps to a known customer, `unresolved_customer` when it exists without a resolved customer, `unknown_workspace` when a nonnull ID has no canonical workspace, and `missing_workspace` when the ID is null. Populate `customer_id` only for resolved records.
 - Preserve unresolved costs for `published.monthly_data_quality_exceptions`; never assign them to another customer’s cloud-cost totals.
-- Keep historical costs for deleted workspaces, using the current workspace mapping for customer attribution.
+- Keep historical costs for deleted workspaces, using the current workspace mapping for customer attribution. Classify lifecycle separately using `canonical.dim_workspaces`: `pre_creation` when created after month-end, `post_deletion` when deleted before month-start, `unknown` for missing/unmatched workspaces, otherwise `active`. Preserve every record; only active-month records contribute to customer metrics.
 
 **dbt tests and validations**
 
-- `not_null`: `cost_id`, `resolution_status`, `usage_month`, `compute_cost_usd`, `storage_cost_usd`, `source_row_id`; `unique`: `cost_id` and `source_row_id`. Workspace IDs may be null; workspace-month keys need not be unique.
+- Derive `lifecycle_status` from workspace creation and deletion dates; accepted values: `active`, `post_deletion`, `pre_creation`, `unknown`.
+- `not_null`: `cost_id`, `resolution_status`, `lifecycle_status`, `usage_month`, `compute_cost_usd`, `storage_cost_usd`, `source_row_id`; `unique`: `cost_id` and `source_row_id`. Workspace IDs may be null; workspace-month keys need not be unique.
 - `accepted_values` for `resolution_status`: `resolved`, `unresolved_customer`, `missing_workspace`, `unknown_workspace`. Check nonnegative costs, exact two-decimal financial precision, and first-of-month usage dates.
 - Validate source-row lineage and exact amounts against `stg_cloud_costs`, customer relationships, and mapping status. Only resolved records have a nonnull `customer_id`.
 - Reconcile staging compute/storage totals against resolved and unresolved canonical charges without double-counting.
@@ -662,7 +667,7 @@ CREATE TABLE intermediate.int_customer_monthly_usage (
 
 **Transformation rules**
 
-- Include only canonical usage with `resolution_status = 'resolved'` for customer/months in the subscription metrics spine.
+- Include only canonical usage with `resolution_status = 'resolved'` and `lifecycle_status = 'active'` for customer/months in the subscription metrics spine.
 - Group by `customer_id` and `usage_month`, using `usage_month` as `reporting_month`. Sum `active_users` and `api_calls` across the customer’s workspaces and set `resolution_status` to `resolved`.
 - Usage totals reflect observed records. Active users are additive workspace counts, not distinct people across workspaces.
 - Preserve observed zero counts, but do not generate synthetic zero-usage rows when records are missing. Aggregation does not prove coverage across all active workspaces; downstream completeness and publication safeguards still apply.
@@ -691,7 +696,7 @@ CREATE TABLE intermediate.int_customer_monthly_cloud_costs (
 
 **Transformation rules**
 
-- Include only canonical charges with `resolution_status = 'resolved'`. Aggregate by `customer_id` and `usage_month` before left joining to the customer/month spine; set `resolution_status` to `resolved`.
+- Include only canonical charges with `resolution_status = 'resolved'` and `lifecycle_status = 'active'`. Aggregate by `customer_id` and `usage_month` before left joining to the customer/month spine; set `resolution_status` to `resolved`.
 - Sum `compute_cost_usd + storage_cost_usd` into `cloud_cost_usd`. Include every valid attributed charge, including multiple charges for the same workspace-month, without deduplicating by workspace and month. Preserve exact two-decimal precision.
 - Preserve observed zero costs. When no matching cost records exist, retain `NULL`; do not generate synthetic zero-cost rows. Observed totals do not establish complete workspace coverage; downstream completeness and publication safeguards still apply.
 - Exclude `unresolved_customer`, `unknown_workspace`, and `missing_workspace` charges from customer totals. Preserve them in the canonical fact for `published.monthly_data_quality_exceptions`; do not assign unallocated costs to placeholder customers.
@@ -764,13 +769,14 @@ CREATE TABLE published.monthly_data_quality_exceptions (
 **Transformation rules**
 
 - Generate source-record `mapping` exceptions from canonical attribution outcomes: `unresolved_customer`, `unknown_workspace`, or `missing_workspace`. Preserve unresolved usage and unallocated cloud costs without assigning them to unrelated customers.
+- Generate source-record `lifecycle` exceptions for resolved usage/cost records classified as `post_deletion` or `pre_creation`. Preserve original measurements and source-row IDs. Unresolved records remain mapping exceptions only.
 - Generate customer-month `completeness` exceptions from publication eligibility rules, including `missing_usage`, `missing_cloud_cost`, and existing specific reasons for unreliable subscription metrics.
 - Preserve available source table, customer/workspace identifiers, reporting month, and `source_row_id`. Missing-record exceptions have null `source_row_id`; retain null reporting months when the affected month cannot be determined.
 - Preserve applicable `excluded_financial_amount_usd`, `excluded_active_users`, and `excluded_api_calls`. Leave unknown or inapplicable values null; never invent zeros.
 
 **dbt tests and validations**
 
-- `not_null`: `source_table`, `issue_category`, `issue_reason`; accepted `issue_category` values: `mapping`, `completeness`.
+- `not_null`: `source_table`, `issue_category`, `issue_reason`; accepted `issue_category` values: `mapping`, `completeness`, `lifecycle`.
 - Validate issue reasons against their corresponding categories and publication eligibility rules.
 - Check first-of-month dates when `reporting_month` is nonnull and nonnegative excluded amounts and usage counts when available.
 - Verify source-row traceability against the contributing canonical record when `source_row_id` is available. Missing-record exceptions must not invent source-row IDs or missing amounts.
